@@ -102,3 +102,4 @@ uploads/
 backend/uploads/
 *.webm
 *.db
+.vercel

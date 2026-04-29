@@ -51,7 +51,17 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-adaptive-interview.vercel.app").rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-adaptive-interview-liart.vercel.app").rstrip("/")
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+if FRONTEND_URL and FRONTEND_URL not in ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS.append(FRONTEND_URL)
 
 app = FastAPI()
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -69,15 +79,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "https://ai-adaptive-interview.vercel.app",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
@@ -2522,7 +2524,7 @@ def send_interview_email(candidate_email: str, candidate_name: str, link_url: st
 
     # Construct the base URL for the interview link
     # On Render, FRONTEND_URL should be set to your Vercel URL
-    full_link = link_url if link_url.startswith("http") else f"{os.getenv('FRONTEND_URL', 'https://ai-adaptive-interview.vercel.app')}{link_url}"
+    full_link = link_url if link_url.startswith("http") else f"{os.getenv('FRONTEND_URL', 'https://ai-adaptive-interview-liart.vercel.app')}{link_url}"
 
     # Task 4: Build schedule info block
     schedule_block = ""
@@ -2608,7 +2610,7 @@ def send_interview_email(candidate_email: str, candidate_name: str, link_url: st
         print("Warning: BREVO_API_KEY not found in environment")
         return False
 
-    full_link = link_url if link_url.startswith("http") else f"{os.getenv('FRONTEND_URL', 'https://ai-adaptive-interview.vercel.app')}{link_url}"
+    full_link = link_url if link_url.startswith("http") else f"{os.getenv('FRONTEND_URL', 'https://ai-adaptive-interview-liart.vercel.app')}{link_url}"
 
     html_content = custom_html.strip() if custom_html and custom_html.strip() else build_default_interview_email_html(
         candidate_name=candidate_name,

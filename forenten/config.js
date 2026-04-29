@@ -8,7 +8,7 @@
             : "https://ai-adaptive-interview-1hsw.onrender.com",
         FRONTEND_BASE_URL: isLocal
             ? `${window.location.protocol}//${window.location.host}`
-            : "https://ai-adaptive-interview.vercel.app"
+            : "https://ai-adaptive-interview-liart.vercel.app"
     };
 
     window.APP_CONFIG = Object.freeze(config);
