@@ -1,0 +1,44 @@
+[
+  {
+    "id": 1,
+    "question": "Can you please introduce yourself and tell us why you are interested in this specific role?",
+    "difficulty": "Easy",
+    "type": "Self-Introduction",
+    "category": "Basic"
+  },
+  {
+    "id": 2,
+    "question": "Can you describe your experience with AWS and a challenging problem you solved using it?",
+    "difficulty": "Medium",
+    "type": "Technical",
+    "category": "AWS Skill"
+  },
+  {
+    "question": "How would you rate your proficiency in AWS? Can you describe a project where you used it?",
+    "difficulty": "Easy",
+    "type": "Technical",
+    "category": "AWS Basics",
+    "id": 3
+  },
+  {
+    "question": "Can you walk us through your most significant technical achievement? What made it challenging?",
+    "difficulty": "Medium",
+    "type": "Technical",
+    "category": "Achievement",
+    "id": 4
+  },
+  {
+    "question": "What do you consider your biggest strengths and weaknesses?",
+    "difficulty": "Easy",
+    "type": "Self-Assessment",
+    "category": "Strengths & Weaknesses",
+    "id": 5
+  },
+  {
+    "question": "Where do you see yourself in the next 5 years, and how does this role fit into that vision?",
+    "difficulty": "Easy",
+    "type": "Career Goals",
+    "category": "Future Plans",
+    "id": 6
+  }
+]

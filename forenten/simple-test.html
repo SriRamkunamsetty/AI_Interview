@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Upload Test</title>
+    <script src="config.js"></script>
+    <style>
+        body { font-family: Arial; padding: 20px; }
+        #status { margin-top: 20px; padding: 10px; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <h2>Simple File Upload Test</h2>
+    <form id="uploadForm">
+        <input type="file" id="fileInput" required>
+        <button type="submit">Upload</button>
+    </form>
+    <div id="status"></div>
+
+    <script>
+    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fileInput = document.getElementById('fileInput');
+        const statusDiv = document.getElementById('status');
+        
+        if (!fileInput.files.length) {
+            statusDiv.textContent = 'Please select a file';
+            statusDiv.className = 'error';
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('source', 'resume');
+
+        statusDiv.textContent = 'Uploading...';
+        statusDiv.className = '';
+
+        try {
+            console.log('Sending request to /upload-resume...');
+            const response = await fetch(`${window.API_BASE_URL || 'http://127.0.0.1:8000'}/upload-resume`, {
+                method: 'POST',
+                body: formData,
+                // No Content-Type header - let the browser set it with the boundary
+            });
+
+            console.log('Response status:', response.status);
+            const result = await response.json();
+            console.log('Response:', result);
+            
+            statusDiv.textContent = 'Success! ' + JSON.stringify(result, null, 2);
+            statusDiv.className = 'success';
+            
+        } catch (error) {
+            console.error('Error:', error);
+            statusDiv.textContent = 'Error: ' + error.message;
+            statusDiv.className = 'error';
+        }
+    });
+    </script>
+</body>
+</html>

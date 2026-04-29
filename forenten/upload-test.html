@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>File Upload Test</title>
+    <script src="config.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success { background-color: #dff0d8; color: #3c763d; }
+        .error { background-color: #f2dede; color: #a94442; }
+        .info { background-color: #d9edf7; color: #31708f; }
+    </style>
+</head>
+<body>
+    <h1>File Upload Test</h1>
+    
+    <form id="uploadForm">
+        <div>
+            <label for="file">Select a file (PDF, DOCX, TXT):</label>
+            <input type="file" id="file" name="file" accept=".pdf,.docx,.txt" required>
+        </div>
+        <div style="margin-top: 20px;">
+            <button type="submit">Upload</button>
+        </div>
+    </form>
+    
+    <div id="status" class="status"></div>
+    
+    <script>
+    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const fileInput = document.getElementById('file');
+        const statusDiv = document.getElementById('status');
+        
+        if (!fileInput.files || fileInput.files.length === 0) {
+            showStatus('Please select a file', 'error');
+            return;
+        }
+        
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('source', 'resume');
+        
+        showStatus('Uploading file...', 'info');
+        
+        try {
+            console.log('Sending request to /upload-resume...');
+            const response = await fetch(`${window.API_BASE_URL || 'http://127.0.0.1:8000'}/upload-resume`, {
+                method: 'POST',
+                body: formData,
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+            
+            console.log('Response status:', response.status);
+            
+            if (!response.ok) {
+                let errorMessage = `Server error: ${response.status} ${response.statusText}`;
+                try {
+                    const errorData = await response.json();
+                    console.error('Error details:', errorData);
+                    errorMessage = errorData.detail || errorMessage;
+                } catch (e) {
+                    console.error('Failed to parse error response:', e);
+                }
+                throw new Error(errorMessage);
+            }
+            
+            const data = await response.json();
+            console.log('Upload successful:', data);
+            showStatus('File uploaded successfully!', 'success');
+            
+        } catch (error) {
+            console.error('Upload failed:', error);
+            showStatus(`Error: ${error.message}`, 'error');
+        }
+    });
+    
+    function showStatus(message, type = 'info') {
+        const statusDiv = document.getElementById('status');
+        statusDiv.textContent = message;
+        statusDiv.className = `status ${type}`;
+    }
+    </script>
+</body>
+</html>
