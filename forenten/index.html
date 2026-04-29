@@ -1257,6 +1257,7 @@
     <!-- Face Detection Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
     <script>
         (function () {
             try {
@@ -2069,6 +2070,38 @@
         let backgroundNoiseCooldownUntil = 0;
         let interviewActive = false;
         let tabViolationCount = 0;
+        let liveMonitoringInterval = null;
+        let objectDetectionInterval = null;
+        let objectModel = null;
+        let liveMonitoringTick = 0;
+        let latestAudioLevel = 0;
+        let currentFaceStatus = 'Camera initializing';
+        let currentObjectStatus = 'Object monitoring unavailable';
+        let fullscreenExitCooldownUntil = 0;
+        let integrityTerminationInFlight = false;
+        const integrityState = {
+            multipleFaceCount: 0,
+            invisibleFaceCount: 0,
+            movementCount: 0,
+            fullscreenExitCount: 0,
+            objectAlertCount: 0,
+            suspiciousBehaviorCount: 0,
+            warnings: [],
+            autoTerminated: false,
+            terminationReason: '',
+            lastMovementAt: 0,
+            lastInvisibleAt: 0,
+            lastMultipleAt: 0,
+            lastObjectAt: 0
+        };
+        let faceTrackingState = {
+            invisibleFrames: 0,
+            multipleFrames: 0,
+            movementFrames: 0,
+            baselineX: null,
+            baselineY: null,
+            baselineArea: null
+        };
 
         // CONFIGURATION: Change this to your Render URL after deployment
         // e.g. "https://your-app-name.onrender.com"
@@ -2236,8 +2269,7 @@
                 console.error('Error marking session complete during noise exit:', e);
             }
 
-            alert('Interview ended automatically because background noise alerts reached 20.');
-            location.reload();
+            await terminateInterviewForIntegrity('Interview auto-submitted because background noise alerts reached the maximum allowed threshold.', 'background_noise', backgroundNoiseAlerts);
         }
 
         function recordBackgroundNoiseAlert() {
@@ -2322,6 +2354,289 @@
 
 
 
+
+        function resetIntegrityState() {
+            integrityState.multipleFaceCount = 0;
+            integrityState.invisibleFaceCount = 0;
+            integrityState.movementCount = 0;
+            integrityState.fullscreenExitCount = 0;
+            integrityState.objectAlertCount = 0;
+            integrityState.suspiciousBehaviorCount = 0;
+            integrityState.warnings = [];
+            integrityState.autoTerminated = false;
+            integrityState.terminationReason = '';
+            integrityState.lastMovementAt = 0;
+            integrityState.lastInvisibleAt = 0;
+            integrityState.lastMultipleAt = 0;
+            integrityState.lastObjectAt = 0;
+            faceTrackingState = {
+                invisibleFrames: 0,
+                multipleFrames: 0,
+                movementFrames: 0,
+                baselineX: null,
+                baselineY: null,
+                baselineArea: null
+            };
+            currentFaceStatus = 'Camera initializing';
+            currentObjectStatus = 'Object monitoring unavailable';
+            fullscreenExitCooldownUntil = 0;
+        }
+
+        function appendIntegrityWarning(message) {
+            if (!message) return;
+            integrityState.warnings = [message, ...integrityState.warnings.filter(item => item !== message)].slice(0, 8);
+        }
+
+        function currentInterviewPhase() {
+            return !document.getElementById('codingRoundSection').classList.contains('hidden') ? 'coding' : 'verbal';
+        }
+
+        function collectCameraFrame() {
+            const video = document.getElementById('videoPreview');
+            if (!video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return '';
+            const canvas = document.createElement('canvas');
+            const width = 320;
+            const scale = width / video.videoWidth;
+            canvas.width = width;
+            canvas.height = Math.max(180, Math.round(video.videoHeight * scale));
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/jpeg', 0.45);
+        }
+
+        function computeIntegrityRiskScore() {
+            let score = 100;
+            score -= tabViolationCount * 6;
+            score -= integrityState.multipleFaceCount * 18;
+            score -= integrityState.invisibleFaceCount * 10;
+            score -= integrityState.movementCount * 7;
+            score -= integrityState.fullscreenExitCount * 10;
+            score -= integrityState.objectAlertCount * 8;
+            score -= backgroundNoiseAlerts * 3;
+            score -= (_qTrack.faceAlerts || 0) * 2;
+            return Math.max(0, Math.min(100, Math.round(score)));
+        }
+
+        function computeInterviewHealthStatus() {
+            if (integrityState.autoTerminated) return 'Auto-submitted';
+            const risk = computeIntegrityRiskScore();
+            if (risk >= 85) return 'Healthy';
+            if (risk >= 65) return 'Monitor Closely';
+            if (risk >= 40) return 'High Risk';
+            return 'Critical';
+        }
+
+        async function pushIntegrityViolation(type, count, detail, extra = {}) {
+            if (!currentInterviewId) return;
+            try {
+                await fetch(`${API_BASE_URL}/session/${currentInterviewId}/violation`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type,
+                        count,
+                        detail,
+                        phase: currentInterviewPhase(),
+                        question_id: currentQuestionId || null,
+                        timestamp: new Date().toISOString(),
+                        evidence_frame: extra.evidence_frame || collectCameraFrame() || ''
+                    })
+                });
+            } catch (error) {
+                console.error('Failed to persist violation', error);
+            }
+        }
+
+        async function sendLiveMonitoringUpdate(forceFrame = false) {
+            if (!currentInterviewId || !interviewActive) return;
+            liveMonitoringTick += 1;
+            const shouldAttachFrame = forceFrame || liveMonitoringTick % 3 === 0;
+            const speakingRecently = (Date.now() - ((_qTrack && _qTrack.lastSpeechTime) || 0)) < 1400;
+            const payload = {
+                current_question_id: currentQuestionId || null,
+                current_question_text: document.getElementById('questionText')?.innerText || '',
+                phase: currentInterviewPhase(),
+                elapsed_seconds: globalTotalTime > 0 ? Math.max(0, globalTotalTime - globalTimeRemaining) : Math.round((Date.now() - (_qTrack.startTime || Date.now())) / 1000),
+                time_remaining_seconds: Math.max(0, globalTimeRemaining || 0),
+                audio_level: Number(latestAudioLevel.toFixed(3)),
+                speaking: Boolean(speakingRecently || codingVoiceListening || (videoRecorder && videoRecorder.isRecording)),
+                silence_seconds: speakingRecently ? 0 : Math.max(0, Math.round((Date.now() - ((_qTrack && _qTrack.lastSpeechTime) || Date.now())) / 1000)),
+                face_status: currentFaceStatus,
+                multiple_face_count: integrityState.multipleFaceCount,
+                invisible_face_count: integrityState.invisibleFaceCount,
+                movement_count: integrityState.movementCount,
+                fullscreen_exit_count: integrityState.fullscreenExitCount,
+                tab_switch_count: Math.max(tabViolationCount, (_qTrack && _qTrack.tabSwitches) || 0),
+                face_alert_count: (_qTrack && _qTrack.faceAlerts) || 0,
+                background_noise_alerts: backgroundNoiseAlerts,
+                object_alert_count: integrityState.objectAlertCount,
+                suspicious_behavior_count: integrityState.suspiciousBehaviorCount,
+                integrity_risk_score: computeIntegrityRiskScore(),
+                integrity_health_status: computeInterviewHealthStatus(),
+                warnings: integrityState.warnings.slice(0, 8),
+                camera_frame: shouldAttachFrame ? collectCameraFrame() : '',
+                mic_active: Boolean(videoRecorder && videoRecorder.isRecording),
+                interviewer_prompt: document.getElementById('codingInterviewerPrompt')?.textContent || currentObjectStatus,
+                auto_terminated: integrityState.autoTerminated,
+                termination_reason: integrityState.terminationReason || ''
+            };
+            try {
+                await fetch(`${API_BASE_URL}/session/${currentInterviewId}/live-update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } catch (error) {
+                console.error('Live monitoring sync failed', error);
+            }
+        }
+
+        function startLiveMonitoringSync() {
+            stopLiveMonitoringSync();
+            liveMonitoringTick = 0;
+            liveMonitoringInterval = setInterval(() => {
+                sendLiveMonitoringUpdate(false);
+            }, 2500);
+            sendLiveMonitoringUpdate(true);
+        }
+
+        function stopLiveMonitoringSync() {
+            if (liveMonitoringInterval) {
+                clearInterval(liveMonitoringInterval);
+                liveMonitoringInterval = null;
+            }
+        }
+
+        async function terminateInterviewForIntegrity(reason, type, count) {
+            if (!currentInterviewId || integrityState.autoTerminated || integrityTerminationInFlight) return;
+            integrityTerminationInFlight = true;
+            integrityState.autoTerminated = true;
+            integrityState.terminationReason = reason;
+            appendIntegrityWarning(reason);
+            showStatus(reason, 'error');
+            try {
+                await fetch(`${API_BASE_URL}/session/${currentInterviewId}/terminate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type,
+                        reason,
+                        count,
+                        phase: currentInterviewPhase(),
+                        question_id: currentQuestionId || null,
+                        timestamp: new Date().toISOString(),
+                        evidence_frame: collectCameraFrame(),
+                        interview_duration_seconds: globalTotalTime > 0 ? Math.max(0, globalTotalTime - globalTimeRemaining) : 0
+                    })
+                });
+                await sendLiveMonitoringUpdate(true);
+            } catch (error) {
+                console.error('Integrity termination sync failed', error);
+            }
+            alert(reason);
+            await endInterview();
+            integrityTerminationInFlight = false;
+        }
+
+        async function registerFullscreenExitViolation() {
+            const now = Date.now();
+            if (now < fullscreenExitCooldownUntil || !interviewActive) return;
+            fullscreenExitCooldownUntil = now + 7000;
+            integrityState.fullscreenExitCount += 1;
+            integrityState.suspiciousBehaviorCount += 1;
+            appendIntegrityWarning(`Fullscreen exited (${integrityState.fullscreenExitCount}/3)`);
+            await pushIntegrityViolation('fullscreen_exit', integrityState.fullscreenExitCount, 'Candidate exited fullscreen mode.');
+            sendLiveMonitoringUpdate(true);
+        }
+
+        async function registerMultipleFaceViolation() {
+            const now = Date.now();
+            if (now - integrityState.lastMultipleAt < 8000) return;
+            integrityState.lastMultipleAt = now;
+            integrityState.multipleFaceCount += 1;
+            integrityState.suspiciousBehaviorCount += 1;
+            appendIntegrityWarning(`Multiple faces detected (${integrityState.multipleFaceCount}/3)`);
+            await pushIntegrityViolation('multiple_faces', integrityState.multipleFaceCount, 'Multiple faces detected in camera frame.');
+            sendLiveMonitoringUpdate(true);
+            if (integrityState.multipleFaceCount > 3) {
+                await terminateInterviewForIntegrity('Interview auto-submitted due to repeated multiple-face violations.', 'multiple_faces', integrityState.multipleFaceCount);
+            }
+        }
+
+        async function registerInvisibleFaceViolation(detailMessage = 'Candidate face is not visible.') {
+            const now = Date.now();
+            if (now - integrityState.lastInvisibleAt < 6000) return;
+            integrityState.lastInvisibleAt = now;
+            integrityState.invisibleFaceCount += 1;
+            integrityState.suspiciousBehaviorCount += 1;
+            appendIntegrityWarning(`Face visibility issue (${integrityState.invisibleFaceCount}/6)`);
+            await pushIntegrityViolation('face_invisible', integrityState.invisibleFaceCount, detailMessage);
+            sendLiveMonitoringUpdate(true);
+            if (integrityState.invisibleFaceCount > 6) {
+                await terminateInterviewForIntegrity('Interview auto-submitted because the candidate face was repeatedly not visible.', 'face_invisible', integrityState.invisibleFaceCount);
+            }
+        }
+
+        async function registerMovementViolation(detailMessage = 'Camera/head movement exceeded the allowed stability threshold.') {
+            const now = Date.now();
+            if (now - integrityState.lastMovementAt < 9000) return;
+            integrityState.lastMovementAt = now;
+            integrityState.movementCount += 1;
+            appendIntegrityWarning(`Keep your head and camera stable (${integrityState.movementCount}/5)`);
+            await pushIntegrityViolation('camera_movement', integrityState.movementCount, detailMessage);
+            sendLiveMonitoringUpdate(false);
+        }
+
+        async function registerObjectViolation(label) {
+            const now = Date.now();
+            if (now - integrityState.lastObjectAt < 10000) return;
+            integrityState.lastObjectAt = now;
+            integrityState.objectAlertCount += 1;
+            integrityState.suspiciousBehaviorCount += 1;
+            currentObjectStatus = `${label} detected`;
+            appendIntegrityWarning(`Suspicious object detected: ${label}`);
+            await pushIntegrityViolation('object_detected', integrityState.objectAlertCount, `Detected suspicious object: ${label}`);
+            sendLiveMonitoringUpdate(true);
+        }
+
+        async function startObjectDetection(video) {
+            if (!(window.cocoSsd && video)) {
+                currentObjectStatus = 'Object monitoring unavailable';
+                return;
+            }
+            if (!objectModel) {
+                try {
+                    objectModel = await cocoSsd.load();
+                    currentObjectStatus = 'Object monitoring active';
+                } catch (error) {
+                    console.error('Object detection model failed to load', error);
+                    currentObjectStatus = 'Object monitoring unavailable';
+                    return;
+                }
+            }
+            if (objectDetectionInterval) clearInterval(objectDetectionInterval);
+            objectDetectionInterval = setInterval(async () => {
+                if (!video || video.readyState !== 4 || integrityState.autoTerminated) return;
+                try {
+                    const predictions = await objectModel.detect(video);
+                    const suspicious = predictions.find(item => item.score >= 0.55 && ['cell phone', 'book'].includes(item.class));
+                    currentObjectStatus = suspicious ? `${suspicious.class} detected` : 'Object monitoring clear';
+                    if (suspicious) {
+                        await registerObjectViolation(suspicious.class);
+                    }
+                } catch (error) {
+                    console.error('Object detection tick failed', error);
+                }
+            }, 3500);
+        }
+
+        function stopObjectDetection() {
+            if (objectDetectionInterval) {
+                clearInterval(objectDetectionInterval);
+                objectDetectionInterval = null;
+            }
+        }
+
         async function acceptDisclaimer() {
             // Hide Modal
             document.getElementById('disclaimerModal').classList.add('hidden');
@@ -2360,7 +2675,9 @@
             backgroundNoiseAlerts = 0;
             backgroundNoiseFrameCount = 0;
             backgroundNoiseCooldownUntil = 0;
+            resetIntegrityState();
             startGlobalCountdown(totalInterviewMinutes, 'verbal');
+            startLiveMonitoringSync();
 
             // Load first question
             if (currentInterviewId && currentQuestionId) {
@@ -2488,7 +2805,7 @@
 
         function getSessionIdFromUrl() {
             const params = new URLSearchParams(window.location.search);
-            return params.get('session_id') || params.get('session') || '';
+            return params.get('session_id') || params.get('session') || params.get('link_id') || '';
         }
 
         function setSessionLinkMode(isActive) {
@@ -3897,6 +4214,8 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
         async function endInterview(alreadySaved = false) {
             // Stop the global countdown timer
             stopGlobalCountdown();
+            sendLiveMonitoringUpdate(true);
+            stopLiveMonitoringSync();
             interviewActive = false;
 
             if (codingVoiceListening && codingVoiceRecognition) {
@@ -3908,7 +4227,7 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
             if (window.speechSynthesis) window.speechSynthesis.cancel();
 
             // Interview complete
-            showStatus('Ending interview and saving results...', 'info');
+            showStatus(integrityState.autoTerminated ? integrityState.terminationReason || 'Ending interview because integrity constraints were violated...' : 'Ending interview and saving results...', 'info');
 
             // --- UI TRANSITION ---
             // Move this UP so the user immediately sees the end screen
@@ -4139,6 +4458,7 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
 
         if (isInterviewActive && !document.fullscreenElement) {
             warning.style.display = 'flex';
+            registerFullscreenExitViolation();
         } else {
             warning.style.display = 'none';
         }
@@ -4230,6 +4550,7 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
 
                 // START FACE DETECTION
                 startFaceDetection(videoPreview);
+                startObjectDetection(videoPreview);
                 startBackgroundNoiseMonitor(stream);
 
             } else {
@@ -4267,13 +4588,12 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
         if (!faceModel) {
             console.log("Loading Face Detection Model...");
             try {
-                // Load with lower threshold to detect faces further away or in background
                 faceModel = await blazeface.load({
                     maxFaces: 10,
                     scoreThreshold: 0.5,
                     iouThreshold: 0.3
                 });
-                console.log("Face Model Loaded ✅");
+                console.log("Face Model Loaded ?");
             } catch (e) {
                 console.error("Failed to load face model", e);
                 return;
@@ -4281,85 +4601,108 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
         }
 
         const warningEl = document.getElementById('faceWarning');
-
-        // Clear logic if already running
         if (faceDetectionInterval) clearInterval(faceDetectionInterval);
 
         faceDetectionInterval = setInterval(async () => {
-            // Only detect if video is playing and ready
-            if (video.readyState === 4 && !video.paused && !video.ended) {
-                const returnTensors = false;
-                const predictions = await faceModel.estimateFaces(video, returnTensors);
+            if (video.readyState !== 4 || video.paused || video.ended || integrityState.autoTerminated) return;
+            const predictions = await faceModel.estimateFaces(video, false);
+            let warningMsg = '';
+            const videoWidth = video.videoWidth || 1;
+            const videoHeight = video.videoHeight || 1;
+            const margin = 20;
 
-                // Advanced Face Analysis
-                let warningMsg = "";
-                const videoWidth = video.videoWidth;
-                const videoHeight = video.videoHeight;
-                const margin = 20; // pixels from edge
+            if (predictions.length === 0) {
+                faceTrackingState.invisibleFrames += 1;
+                faceTrackingState.multipleFrames = 0;
+                currentFaceStatus = 'Face not visible';
+                warningMsg = 'YOUR FACE IS NOT VISIBLE';
+                if (faceTrackingState.invisibleFrames >= 3) {
+                    await registerInvisibleFaceViolation('Candidate face is not visible to the camera.');
+                    faceTrackingState.invisibleFrames = 0;
+                }
+            } else if (predictions.length > 1) {
+                faceTrackingState.multipleFrames += 1;
+                faceTrackingState.invisibleFrames = 0;
+                currentFaceStatus = 'Multiple faces detected';
+                warningMsg = 'MULTIPLE FACES DETECTED';
+                if (faceTrackingState.multipleFrames >= 2) {
+                    await registerMultipleFaceViolation();
+                    faceTrackingState.multipleFrames = 0;
+                }
+            } else {
+                faceTrackingState.invisibleFrames = 0;
+                faceTrackingState.multipleFrames = 0;
+                const pred = predictions[0];
+                const prob = pred.probability ? pred.probability[0] : 1.0;
+                const start = pred.topLeft;
+                const end = pred.bottomRight;
+                const centerX = ((start[0] + end[0]) / 2) / videoWidth;
+                const centerY = ((start[1] + end[1]) / 2) / videoHeight;
+                const faceArea = ((end[0] - start[0]) * (end[1] - start[1])) / (videoWidth * videoHeight);
 
-                if (predictions.length === 0) {
-                    warningMsg = "YOUR FACE IS NOT VISIBLE";
-                } else if (predictions.length > 1) {
-                    warningMsg = "MULTIPLE FACES DETECTED";
-                } else {
-                    const pred = predictions[0];
-                    const prob = pred.probability ? pred.probability[0] : 1.0;
-                    const start = pred.topLeft;
-                    const end = pred.bottomRight;
-
-                    // 1. Check Clarity/Obstruction (e.g., fingers covering face)
-                    // Lower probability usually means occlusion or bad lighting
-                    if (prob < 0.90) {
-                        warningMsg = "FACE NOT CLEAR / OBSTRUCTED";
-                    }
-                    // 2. Check Partial Face (Clipping Edges)
-                    else if (
-                        start[0] < margin || start[1] < margin ||
-                        end[0] > videoWidth - margin || end[1] > videoHeight - margin
-                    ) {
-                        warningMsg = "PARTIAL FACE - CENTER YOURSELF";
-                    }
-                    // 3. Eye Contact / Gaze Check (Approximation using Face Orientation)
-                    else if (pred.landmarks) {
-                        const rightEye = pred.landmarks[0]; // User's Right Eye (Camera Left)
-                        const leftEye = pred.landmarks[1];  // User's Left Eye (Camera Right)
-                        const nose = pred.landmarks[2];     // Nose Tip
-
-                        // Calculate eye midpoint along X-axis
-                        const eyeMidX = (rightEye[0] + leftEye[0]) / 2;
-
-                        // Calculate distance between eyes (to normalize for distance from camera)
-                        const eyeDist = Math.abs(rightEye[0] - leftEye[0]);
-
-                        // Check Nose deviation from center
-                        // If you look straight, nose is centered between eyes.
-                        // If you look Left/Right, nose moves closer to one eye.
-                        const noseDevX = Math.abs(nose[0] - eyeMidX);
-
-                        // Tuning Threshold: 0.4 to 0.5 is a reasonable range for "looking away"
-                        if (noseDevX > (eyeDist * 0.45)) {
-                            warningMsg = "MAINTAIN EYE CONTACT";
-                        }
-                    }
+                if (faceTrackingState.baselineX == null) {
+                    faceTrackingState.baselineX = centerX;
+                    faceTrackingState.baselineY = centerY;
+                    faceTrackingState.baselineArea = faceArea;
                 }
 
-                if (warningMsg) {
-                    warningEl.style.display = 'flex';
-                    // Update the text div (2nd child)
-                    const textDiv = warningEl.querySelector('div');
-                    if (textDiv) textDiv.innerText = warningMsg;
-                    video.style.border = "3px solid red";
-                    // --- Record for proctoring metrics ---
-                    if (typeof recordFaceAlert === 'function') recordFaceAlert();
+                const drift = Math.abs(centerX - faceTrackingState.baselineX) + Math.abs(centerY - faceTrackingState.baselineY) + Math.abs(faceArea - faceTrackingState.baselineArea) * 1.6;
+                faceTrackingState.baselineX = faceTrackingState.baselineX * 0.92 + centerX * 0.08;
+                faceTrackingState.baselineY = faceTrackingState.baselineY * 0.92 + centerY * 0.08;
+                faceTrackingState.baselineArea = faceTrackingState.baselineArea * 0.92 + faceArea * 0.08;
+
+                if (prob < 0.9) {
+                    currentFaceStatus = 'Face obstructed';
+                    warningMsg = 'FACE NOT CLEAR / OBSTRUCTED';
+                } else if (
+                    start[0] < margin || start[1] < margin ||
+                    end[0] > videoWidth - margin || end[1] > videoHeight - margin
+                ) {
+                    currentFaceStatus = 'Face partially out of frame';
+                    warningMsg = 'PARTIAL FACE - CENTER YOURSELF';
+                } else if (drift > 0.32) {
+                    faceTrackingState.movementFrames += 1;
+                    currentFaceStatus = 'Camera/head movement detected';
+                    warningMsg = 'KEEP YOUR HEAD AND CAMERA STABLE';
+                    if (faceTrackingState.movementFrames >= 3) {
+                        await registerMovementViolation('Repeated camera/head movement detected.');
+                        faceTrackingState.movementFrames = 0;
+                    }
+                } else if (pred.landmarks) {
+                    faceTrackingState.movementFrames = 0;
+                    const rightEye = pred.landmarks[0];
+                    const leftEye = pred.landmarks[1];
+                    const nose = pred.landmarks[2];
+                    const eyeMidX = (rightEye[0] + leftEye[0]) / 2;
+                    const eyeDist = Math.abs(rightEye[0] - leftEye[0]);
+                    const noseDevX = Math.abs(nose[0] - eyeMidX);
+                    if (noseDevX > (eyeDist * 0.45)) {
+                        currentFaceStatus = 'Maintain eye contact';
+                        warningMsg = 'MAINTAIN EYE CONTACT';
+                    } else {
+                        currentFaceStatus = 'Face visible and stable';
+                    }
                 } else {
-                    warningEl.style.display = 'none';
-                    video.style.border = "none";
+                    faceTrackingState.movementFrames = 0;
+                    currentFaceStatus = 'Face visible and stable';
                 }
             }
-        }, 500); // Check every 500ms
+
+            if (warningMsg) {
+                warningEl.style.display = 'flex';
+                const textDiv = warningEl.querySelector('div');
+                if (textDiv) textDiv.innerText = warningMsg;
+                video.style.border = '3px solid red';
+                if (typeof recordFaceAlert === 'function') recordFaceAlert();
+            } else {
+                warningEl.style.display = 'none';
+                video.style.border = 'none';
+            }
+        }, 500);
     }
 
     function stopFaceDetection() {
+
         if (faceDetectionInterval) {
             clearInterval(faceDetectionInterval);
             faceDetectionInterval = null;
@@ -4371,6 +4714,7 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
     async function stopAndSaveFullSessionRecording(interviewId) {
         console.log("Stopping full session recording...");
         stopFaceDetection(); // Stop detection loop
+        stopObjectDetection();
         stopBackgroundNoiseMonitor();
 
         if (!fullSessionRecorder && window.recordVideo === false) {
@@ -4529,6 +4873,7 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
                 sumSquares += normalized * normalized;
             }
             const rms = Math.sqrt(sumSquares / noiseDataArray.length);
+            latestAudioLevel = rms;
             const now = Date.now();
             const isInterviewVisible =
                 !document.getElementById('interviewSection').classList.contains('hidden') ||
@@ -4558,6 +4903,7 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
             noiseMonitorFrame = null;
         }
         backgroundNoiseFrameCount = 0;
+        latestAudioLevel = 0;
         if (noiseAudioContext) {
             try { noiseAudioContext.close(); } catch (e) { }
             noiseAudioContext = null;

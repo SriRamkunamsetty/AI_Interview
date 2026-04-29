@@ -2856,6 +2856,126 @@
 
         let adminId = null;
         let adminEmail = "";
+        let liveResultsPoller = null;
+        window._parsedResumeName = "";
+
+        function normalizeNameTokens(name) {
+            return String(name || '')
+                .toLowerCase()
+                .replace(/[^a-z\s]/g, ' ')
+                .split(/\s+/)
+                .filter(Boolean)
+                .filter(token => !['mr', 'mrs', 'ms', 'dr', 'jr', 'sr'].includes(token));
+        }
+
+        function compareCandidateNamesForAdmin(manualName, detectedName) {
+            const manualTokens = normalizeNameTokens(manualName);
+            const detectedTokens = normalizeNameTokens(detectedName);
+            if (!manualTokens.length || !detectedTokens.length) {
+                return { matches: true, similarity: 1, reason: 'insufficient_data' };
+            }
+            const manualJoined = manualTokens.join(' ');
+            const detectedJoined = detectedTokens.join(' ');
+            const overlap = manualTokens.filter(token => detectedTokens.includes(token)).length / Math.max(manualTokens.length, detectedTokens.length);
+            const sharedChars = [...manualJoined].filter(ch => detectedJoined.includes(ch)).length;
+            const charScore = sharedChars / Math.max(manualJoined.length, detectedJoined.length, 1);
+            const subsetScore = manualTokens.every(token => detectedTokens.includes(token)) || detectedTokens.every(token => manualTokens.includes(token)) ? 0.92 : 0;
+            const similarity = Number(Math.max(overlap, charScore, subsetScore).toFixed(3));
+            return { matches: similarity >= 0.7, similarity, reason: similarity >= 0.7 ? 'matched' : 'mismatch' };
+        }
+
+        function clearLiveResultsPolling() {
+            if (liveResultsPoller) {
+                clearInterval(liveResultsPoller);
+                liveResultsPoller = null;
+            }
+        }
+
+        function buildLiveMonitoringHtml(data, interviewId) {
+            const live = data.live_monitoring || {};
+            const report = data.integrity_report || {};
+            const warnings = (live.warnings || []).slice(0, 6);
+            const frame = live.camera_frame || '';
+            const audioPct = Math.max(4, Math.min(100, Math.round((live.audio_level || 0) * 280)));
+            const updatedAt = live.updated_at ? new Date(live.updated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Awaiting candidate stream';
+            const violationTimeline = (data.violations || []).slice(-6).reverse().map(v => `
+                <div style="padding:0.8rem 0;border-bottom:1px solid var(--border);display:flex;gap:0.9rem;align-items:flex-start;">
+                    <div style="width:10px;height:10px;border-radius:999px;background:${v.termination_triggered ? 'var(--danger)' : 'var(--warning)'};margin-top:0.35rem;"></div>
+                    <div style="flex:1;">
+                        <div style="font-weight:700;color:var(--text-primary);text-transform:capitalize;">${(v.type || 'violation').replace(/_/g, ' ')}</div>
+                        <div style="font-size:0.82rem;color:var(--text-muted);margin-top:0.2rem;">${v.detail || 'Integrity anomaly recorded'} ? ${v.timestamp ? new Date(v.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}</div>
+                        ${v.evidence_path ? `<img src="${API_BASE}/${String(v.evidence_path).replace(/^.*?(uploads\/)/, '$1')}" style="margin-top:0.55rem;width:180px;border-radius:10px;border:1px solid var(--border);" />` : ''}
+                    </div>
+                </div>
+            `).join('') || '<div style="color: var(--text-muted); padding: 1rem 0;">No violations recorded yet.</div>';
+
+            return `
+                <div style="margin-bottom: 1.5rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+                    <div>
+                        <h2 style="color: var(--primary-light); margin-bottom: 0.35rem; font-size: 1.55rem;">${data.candidate_name || 'Candidate'} - Live Monitoring</h2>
+                        <p style="color: var(--text-muted); font-size: 0.9rem;">Session ${interviewId} - status: ${data.session_status || 'started'} - last update ${updatedAt}</p>
+                    </div>
+                    <div style="padding:0.8rem 1rem;border-radius:12px;border:1px solid var(--border);background:var(--bg-card);min-width:220px;">
+                        <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Integrity Health</div>
+                        <div style="font-size:1.2rem;font-weight:800;color:${(report.integrity_score || 0) >= 70 ? 'var(--accent)' : 'var(--danger)'};margin-top:0.4rem;">${live.integrity_health_status || report.risk_classification || 'Monitoring'}</div>
+                        <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:0.2rem;">Risk Score: ${live.integrity_risk_score ?? report.integrity_score ?? 0}/100</div>
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:minmax(300px,1.1fr) minmax(320px,0.9fr);gap:1rem;align-items:start;">
+                    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-camera"></i> Candidate Camera</strong>
+                            <span style="font-size:0.82rem;color:var(--text-muted);">${live.face_status || 'Waiting for camera feed'}</span>
+                        </div>
+                        ${frame ? `<img src="${frame}" style="width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:12px;border:1px solid var(--border);background:#000;" />` : '<div style="height:260px;border-radius:12px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text-muted);background:rgba(255,255,255,0.02);">Live frame will appear once the candidate grants camera access.</div>'}
+                        <div style="margin-top:1rem;display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">
+                            <div style="padding:0.9rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
+                                <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;">Current Question</div>
+                                <div style="margin-top:0.35rem;font-weight:700;line-height:1.45;">${live.current_question_text || 'Waiting for interview to start'}</div>
+                            </div>
+                            <div style="padding:0.9rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
+                                <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;">Audio Activity</div>
+                                <div style="margin-top:0.6rem;height:12px;border-radius:999px;background:rgba(255,255,255,0.08);overflow:hidden;">
+                                    <div style="height:100%;width:${audioPct}%;background:linear-gradient(90deg,var(--accent),#22d3ee);"></div>
+                                </div>
+                                <div style="margin-top:0.45rem;font-size:0.82rem;color:var(--text-secondary);">${live.speaking ? 'Candidate speaking' : 'Silence / listening'} ? ${(live.audio_level || 0).toFixed ? live.audio_level.toFixed(3) : live.audio_level || 0}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;flex-direction:column;gap:1rem;">
+                        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.8rem;">
+                            ${[
+                                ['Phase', live.phase || 'verbal'],
+                                ['Elapsed', `${live.elapsed_seconds || 0}s`],
+                                ['Time Left', `${live.time_remaining_seconds || 0}s`],
+                                ['Face Alerts', report.face_alerts ?? live.face_alert_count ?? 0],
+                                ['Multiple Faces', report.multiple_faces ?? live.multiple_face_count ?? 0],
+                                ['Invisible Face', report.invisible_face_count ?? live.invisible_face_count ?? 0],
+                                ['Movement', report.movement_violations ?? live.movement_count ?? 0],
+                                ['Fullscreen Exits', report.fullscreen_exits ?? live.fullscreen_exit_count ?? 0],
+                                ['Tab Switches', report.tab_switches ?? live.tab_switch_count ?? 0],
+                                ['Noise Alerts', report.background_noise_alerts ?? live.background_noise_alerts ?? 0],
+                                ['Object Alerts', report.object_alerts ?? live.object_alert_count ?? 0],
+                                ['Health', live.integrity_health_status || report.risk_classification || 'Monitoring']
+                            ].map(([label, value]) => `<div style="padding:0.75rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);"><div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;">${label}</div><div style="margin-top:0.28rem;font-weight:800;font-size:1rem;">${value}</div></div>`).join('')}
+                        </div>
+
+                        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-triangle-exclamation"></i> Active Warnings</strong>
+                            <div style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:0.55rem;">${warnings.length ? warnings.map(item => `<span style="padding:0.45rem 0.7rem;border-radius:999px;background:rgba(245,158,11,0.12);color:var(--warning);font-size:0.8rem;border:1px solid rgba(245,158,11,0.2);">${item}</span>`).join('') : '<span style="color:var(--text-muted);font-size:0.85rem;">No active warnings.</span>'}</div>
+                            ${data.termination_reason ? `<div style="margin-top:0.85rem;padding:0.85rem 1rem;border-radius:10px;background:rgba(244,63,94,0.12);border:1px solid rgba(244,63,94,0.24);color:#fecaca;"><strong>Termination:</strong> ${data.termination_reason}</div>` : ''}
+                        </div>
+
+                        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-timeline"></i> Integrity Timeline</strong>
+                            <div style="margin-top:0.7rem;max-height:280px;overflow:auto;">${violationTimeline}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
 
         // ── Task 6: Pagination State ──
         let currentPage = 1;
@@ -3086,6 +3206,9 @@
             const scheduleStart = document.getElementById('scheduleStart').value;
             const scheduleEnd = document.getElementById('scheduleEnd').value;
             const createBtn = document.getElementById('createBtn');
+            const parsedResumeName = window._parsedResumeName || '';
+            const nameValidation = compareCandidateNamesForAdmin(name, parsedResumeName);
+            let resumeNameConfirmed = nameValidation.matches;
 
             if (!name || !email || !resume || !jd) {
                 showToast("Please fill in all fields (including candidate email).", "error");
@@ -3097,6 +3220,17 @@
                     showToast("Schedule End time must be after the Start time.", "error");
                     return;
                 }
+            }
+
+            if (parsedResumeName && !nameValidation.matches) {
+                const confirmed = confirm(`The entered candidate name "${name}" does not closely match the resume name "${parsedResumeName}" (similarity ${(nameValidation.similarity * 100).toFixed(0)}%).
+
+Click OK to confirm this candidate mapping, or Cancel to review the form.`);
+                if (!confirmed) {
+                    showToast('Review the candidate name before creating the interview link.', 'warning');
+                    return;
+                }
+                resumeNameConfirmed = true;
             }
 
             createBtn.disabled = true;
@@ -3116,7 +3250,10 @@
                         record_video: recordVideo,
                         custom_email_html: window._customEmailHtml || "",
                         scheduled_start: toUtcIso(scheduleStart),
-                        scheduled_end: toUtcIso(scheduleEnd)
+                        scheduled_end: toUtcIso(scheduleEnd),
+                        resume_detected_name: parsedResumeName,
+                        resume_name_similarity: nameValidation.similarity,
+                        resume_name_confirmed: resumeNameConfirmed
                     })
                 });
 
@@ -3139,6 +3276,9 @@
                         showToast(`Link created, but email failed to send.`, "warning");
                     }
 
+                    if (data.name_validation && !data.name_validation.matches) {
+                        showToast('Name mismatch was confirmed and recorded for audit.', 'warning');
+                    }
                     addSessionToUI(name, data.link_url, data.link_id);
 
                     // Clear form
@@ -4004,6 +4144,7 @@
         }
 
         function openLiveResults(linkId, candidateName) {
+            clearLiveResultsPolling();
             document.getElementById('nav-btn-results').style.display = 'block';
             switchView('results');
             document.getElementById('liveResultsContent').innerHTML = `
@@ -4017,6 +4158,9 @@
             setTimeout(() => {
                 currentViewId = linkId;
                 refreshLiveResults(linkId);
+                liveResultsPoller = setInterval(() => {
+                    if (currentViewId === linkId) refreshLiveResults(linkId);
+                }, 3000);
             }, 100);
         }
 
@@ -4028,12 +4172,16 @@
 
                 const data = await response.json();
 
+                if (data.session_status !== 'completed') {
+                    container.innerHTML = buildLiveMonitoringHtml(data, interviewId);
+                    return;
+                }
+
                 if (!data.answers || data.answers.length === 0) {
                     container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 3rem;">No answers recorded yet. The candidate has not started answering questions.</div>';
                     return;
                 }
 
-                // AI overview calculation
                 let totalScore = 0;
                 let answeredCount = 0;
                 let totalTimeSeconds = 0;
@@ -4053,20 +4201,16 @@
                 const avgScore = answeredCount > 0 ? (totalScore / answeredCount).toFixed(1) : 0;
                 const scoreColor = avgScore >= 60 ? 'var(--accent)' : 'var(--danger)';
                 const mins = Math.floor(totalTimeSeconds / 60);
+                const integrityReport = data.integrity_report || {};
 
-                let riskText = "🟢 Clean Session";
-                if (totalTabSwitches > 2 || totalFaceAlerts > 5) riskText = "🟡 Moderate Risk";
-                if (totalTabSwitches > 5 || totalFaceAlerts > 10) riskText = "🔴 High Risk";
+                let riskText = integrityReport.risk_classification || 'Low';
 
                 let html = `
                     <div style="margin-bottom: 2rem;">
                         <h2 style="color: var(--primary-light); margin-bottom: 0.5rem; font-size: 1.5rem;">${data.candidate_name || 'Candidate'}</h2>
-                        <p style="color: var(--text-muted); font-size: 0.9rem;">
-                            Session ID: ${interviewId}
-                        </p>
+                        <p style="color: var(--text-muted); font-size: 0.9rem;">Session ID: ${interviewId}</p>
                     </div>
 
-                    <!-- STATISTICS WIDGETS -->
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
                         <div style="background: var(--bg-card); padding: 1.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border);">
                             <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase;">Average Score</div>
@@ -4077,39 +4221,30 @@
                             <div style="font-size: 2rem; font-weight: 800; color: var(--text-primary); margin-top: 0.5rem;">${answeredCount}</div>
                         </div>
                         <div style="background: var(--bg-card); padding: 1.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border);">
-                            <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase;">Time Taken</div>
-                            <div style="font-size: 2rem; font-weight: 800; color: var(--text-primary); margin-top: 0.5rem;">${mins}<span style="font-size: 1rem;">m</span></div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase;">Integrity Score</div>
+                            <div style="font-size: 2rem; font-weight: 800; color: ${(integrityReport.integrity_score || 0) >= 70 ? 'var(--accent)' : 'var(--danger)'}; margin-top: 0.5rem;">${integrityReport.integrity_score || 0}<span style="font-size: 1rem;">/100</span></div>
                         </div>
                     </div>
 
-                    <!-- Proctoring Risk Widget -->
-                    <div style="background: var(--bg-card); padding: 1.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 2rem; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="background: var(--bg-card); padding: 1.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 2rem; display: flex; align-items: center; justify-content: space-between; gap:1rem; flex-wrap:wrap;">
                         <div>
-                            <strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">🛡️ Integrity & Proctoring Summary</strong>
+                            <strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;"><i class="fas fa-shield-halved"></i> Final Integrity Summary</strong>
                             <div style="margin-top: 0.5rem; font-size: 1.1rem; font-weight: 700;">${riskText}</div>
+                            <div style="color:var(--text-muted);font-size:0.88rem;margin-top:0.35rem;max-width:720px;">${integrityReport.ai_summary || 'Integrity analytics were not available.'}</div>
+                            ${data.termination_reason ? `<div style="margin-top:0.7rem;color:#fecaca;"><strong>Termination:</strong> ${data.termination_reason}</div>` : ''}
                         </div>
                         <div style="text-align: right; color: var(--text-muted); font-size: 0.9rem;">
-                            <div>Tab Switches: <span style="color: var(--text-primary); font-weight: 700;">${totalTabSwitches}</span></div>
-                            <div>Face Alerts: <span style="color: var(--text-primary); font-weight: 700;">${totalFaceAlerts}</span></div>
+                            <div>Tab Switches: <span style="color: var(--text-primary); font-weight: 700;">${integrityReport.tab_switches || totalTabSwitches}</span></div>
+                            <div>Face Alerts: <span style="color: var(--text-primary); font-weight: 700;">${integrityReport.face_alerts || totalFaceAlerts}</span></div>
+                            <div>Multiple Faces: <span style="color: var(--text-primary); font-weight: 700;">${integrityReport.multiple_faces || 0}</span></div>
+                            <div>Invisible Face: <span style="color: var(--text-primary); font-weight: 700;">${integrityReport.invisible_face_count || 0}</span></div>
+                            <div>Movement: <span style="color: var(--text-primary); font-weight: 700;">${integrityReport.movement_violations || 0}</span></div>
+                            <div>Fullscreen Exits: <span style="color: var(--text-primary); font-weight: 700;">${integrityReport.fullscreen_exits || 0}</span></div>
                         </div>
                     </div>
+                `;
 
-                    <!-- Recording & Downloads -->
-                    <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem;">
-                        <div style="flex: 1; min-width: 300px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem;">
-                            <strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;"><i class="fas fa-cog"></i> Recruitment Decision</strong>
-                            <div style="margin-top: 1rem; display: flex; gap: 0.75rem;">
-                                <button onclick="setCandidateDecision('${interviewId}', 'selected')" style="flex:1; background: var(--accent); color:#fff; border:none; padding:0.7rem; border-radius:8px; font-weight:700; cursor:pointer; transition: 0.2s; opacity: ${data.decision === 'selected' ? '0.5' : '1'}; pointer-events: ${data.decision === 'selected' ? 'none' : 'auto'};">
-                                    <i class="fas fa-check-circle"></i> ${data.decision === 'selected' ? 'SELECTED' : 'SELECT CANDIDATE'}
-                                </button>
-                                <button onclick="setCandidateDecision('${interviewId}', 'rejected')" style="flex:1; background: var(--danger); color:#fff; border:none; padding:0.7rem; border-radius:8px; font-weight:700; cursor:pointer; transition: 0.2s; opacity: ${data.decision === 'rejected' ? '0.5' : '1'}; pointer-events: ${data.decision === 'rejected' ? 'none' : 'auto'};">
-                                    <i class="fas fa-times-circle"></i> ${data.decision === 'rejected' ? 'REJECTED' : 'REJECT CANDIDATE'}
-                                </button>
-                            </div>
-                            <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.5rem; text-align: center;">Clicking will update status and auto-send notification email.</p>
-                        </div>
-
-                        ${data.recording_url ? `
+                html += `<div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:2rem;">${data.recording_url ? `
                         <div style="flex: 1; min-width: 300px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem;">
                             <strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;"><i class="fas fa-video"></i> Interview Recording</strong>
                             <video controls style="width: 100%; max-height: 200px; border-radius: 8px; margin-top: 0.75rem; background: #000;">
@@ -4117,83 +4252,52 @@
                             </video>
                         </div>
                         ` : ''}
-
                         <div style="flex: 0 0 auto; min-width: 250px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem;">
                             <strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;"><i class="fas fa-file-pdf"></i> Interview Report</strong>
                             <div style="margin-top: 1rem;">
                                 ${data.actual_interview_id ? `
-                                <a href="${API_BASE}/generate-report/${data.actual_interview_id}" target="_blank"
-                                   style="padding: 0.6rem 1.2rem; background: var(--primary); color: #fff; border-radius: 8px; text-decoration: none; font-size: 0.9rem; font-weight: 600; text-align: center; display: block;">
+                                <a href="${API_BASE}/generate-report/${data.actual_interview_id}" target="_blank" style="padding: 0.6rem 1.2rem; background: var(--primary); color: #fff; border-radius: 8px; text-decoration: none; font-size: 0.9rem; font-weight: 600; text-align: center; display: block;">
                                     <i class="fas fa-download"></i> Download PDF Report
                                 </a>
-                                ` : `
-                                <p style="color: var(--text-muted); font-size: 0.9rem;">PDF Report not available yet.</p>
-                                `}
+                                ` : `<p style="color: var(--text-muted); font-size: 0.9rem;">PDF Report not available yet.</p>`}
                             </div>
                         </div>
-                    </div>
-                `;
+                    </div>`;
 
-                // Questions breakdown
                 html += '<strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;"><i class="fas fa-list-check"></i> Detailed Breakdown</strong>';
                 html += '<div style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">';
-
-                // Helper
                 function wpmLabel(wpm) {
                     if (!wpm) return '<span style="color:var(--text-muted)">N/A</span>';
                     if (wpm < 100) return `<span style="color:var(--warning)"><i class="fas fa-gauge-simple"></i> ${wpm} WPM (Slow)</span>`;
                     if (wpm > 160) return `<span style="color:var(--danger)"><i class="fas fa-gauge-high"></i> ${wpm} WPM (Fast)</span>`;
                     return `<span style="color:var(--accent)"><i class="fas fa-gauge"></i> ${wpm} WPM (Good)</span>`;
-                };
-
+                }
                 data.answers.forEach(ans => {
-                    const score = ans.ai_score ?? '—';
+                    const score = ans.ai_score ?? '?';
                     const sColor = (ans.ai_score || 0) >= 60 ? 'var(--accent)' : 'var(--danger)';
                     const timeStr = `${Math.floor((ans.time_spent_seconds || 0) / 60)}m ${(ans.time_spent_seconds || 0) % 60}s`;
                     const tabWarn = (ans.tab_switches || 0) > 0 ? `<span style="color:var(--danger);"><i class="fas fa-face-angry"></i> ${ans.tab_switches} tab switch(es)</span>` : `<span style="color:var(--accent);"><i class="fas fa-circle-check"></i> No switches</span>`;
                     const faceWarn = (ans.face_alerts || 0) > 0 ? `<span style="color:var(--danger);"><i class="fas fa-face-frown"></i> ${ans.face_alerts} face alert(s)</span>` : `<span style="color:var(--accent);"><i class="fas fa-face-smile"></i> Visible</span>`;
-
                     html += `
                         <div style="background: var(--bg-card); padding: 1.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border);">
                             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
                                 <h4 style="color: var(--text-primary); margin: 0; flex: 1; font-size: 1.1rem;">Q${ans.question_id}: ${ans.question_text}</h4>
                                 <span style="font-size: 1.5rem; font-weight: 700; color: ${sColor}; margin-left: 1rem;">${score}/100</span>
                             </div>
-
                             <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem; font-size: 0.85rem;">
                                 <span style="background: rgba(100,100,255,0.1); border-radius: 6px; padding: 4px 10px;"><i class="fas fa-clock"></i> ${timeStr}</span>
                                 <span style="background: rgba(100,100,255,0.1); border-radius: 6px; padding: 4px 10px;">${wpmLabel(ans.wpm || 0)}</span>
                                 <span style="background: rgba(100,100,255,0.1); border-radius: 6px; padding: 4px 10px;"><i class="fas fa-comment-dots"></i> ${ans.filler_count || 0} filler(s)</span>
                                 <span style="background: rgba(100,100,255,0.1); border-radius: 6px; padding: 4px 10px;"><i class="fas fa-stopwatch"></i> ${ans.pause_count || 0} pause(s)</span>
                             </div>
-
-                            <div style="display: flex; gap: 1rem; margin-bottom: 1rem; font-size: 0.85rem;">
-                                ${tabWarn} · ${faceWarn}
-                            </div>
-
-                            <div style="margin-bottom: 1rem;">
-                                <strong style="color: var(--text-secondary); font-size: 0.85rem;">Candidate's Answer</strong>
-                                <p style="color: var(--text-muted); margin-top: 0.4rem; line-height: 1.6; font-size: 0.95rem;">${ans.answer_text}</p>
-                            </div>
-
-                            ${ans.corrected_answer ? `
-                            <div style="margin-bottom: 1rem; background: rgba(120,70,255,0.06); padding: 0.75rem; border-radius: 6px; border-left: 3px solid var(--primary);">
-                                <strong style="color: var(--primary-light); font-size: 0.85rem;">💡 Suggested Answer</strong>
-                                <p style="color: var(--text-muted); margin-top: 0.4rem; font-style: italic; font-size: 0.9rem; line-height: 1.5;">${ans.corrected_answer}</p>
-                            </div>` : ''}
-
-                            <div style="background: rgba(6,214,160,0.06); padding: 0.75rem; border-radius: 6px; border-left: 3px solid var(--accent);">
-                                <strong style="color: var(--accent); font-size: 0.85rem;">🤖 AI Feedback</strong>
-                                <p style="color: var(--text-primary); margin-top: 0.4rem; font-size: 0.9rem; line-height: 1.5;">${ans.ai_feedback}</p>
-                            </div>
-                        </div>
-                    `;
+                            <div style="display: flex; gap: 1rem; margin-bottom: 1rem; font-size: 0.85rem;">${tabWarn} ? ${faceWarn}</div>
+                            <div style="margin-bottom: 1rem;"><strong style="color: var(--text-secondary); font-size: 0.85rem;">Candidate's Answer</strong><p style="color: var(--text-muted); margin-top: 0.4rem; line-height: 1.6; font-size: 0.95rem;">${ans.answer_text}</p></div>
+                            ${ans.corrected_answer ? `<div style="margin-bottom: 1rem; background: rgba(120,70,255,0.06); padding: 0.75rem; border-radius: 6px; border-left: 3px solid var(--primary);"><strong style="color: var(--primary-light); font-size: 0.85rem;"><i class="fas fa-lightbulb"></i> Suggested Answer</strong><p style="color: var(--text-muted); margin-top: 0.4rem; font-style: italic; font-size: 0.9rem; line-height: 1.5;">${ans.corrected_answer}</p></div>` : ''}
+                            <div style="background: rgba(6,214,160,0.06); padding: 0.75rem; border-radius: 6px; border-left: 3px solid var(--accent);"><strong style="color: var(--accent); font-size: 0.85rem;"><i class="fas fa-robot"></i> AI Feedback</strong><p style="color: var(--text-primary); margin-top: 0.4rem; font-size: 0.9rem; line-height: 1.5;">${ans.ai_feedback}</p></div>
+                        </div>`;
                 });
-
-                html += '</div>'; // End questions container
-
+                html += '</div>';
                 container.innerHTML = html;
-
             } catch (err) {
                 console.error(err);
                 container.innerHTML = '<div style="text-align: center; color: var(--danger); padding: 2rem;">Failed to load live results.</div>';
@@ -4322,6 +4426,10 @@
                 document.getElementById('modalCandidateName').textContent = `${data.candidate_name} — Interview Results`;
                 document.getElementById('modalSource').textContent = `${data.source} · ${new Date(data.date).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })}`;
 
+                if (data.session_status !== 'completed') {
+                    container.innerHTML = '<div style="text-align: center; color: var(--warning); padding: 2rem;">Interview is still in progress. Use Live Results for active monitoring. Final summary becomes available after completion.</div>';
+                    return;
+                }
                 if (!data.answers || data.answers.length === 0) {
                     container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 2rem;">No answers recorded yet. Ask candidate to answer a question first.</div>';
                     return;

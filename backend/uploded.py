@@ -29,6 +29,7 @@ import time
 import base64
 import html
 import textwrap
+from difflib import SequenceMatcher
 from pydantic import BaseModel
 from mongo_db import candidates_collection, interviews_collection, answers_collection, admins_collection, interview_sessions_collection
 from reportlab.lib.pagesizes import A4
@@ -51,7 +52,10 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-adaptive-interview-liart.vercel.app").rstrip("/")
+CANONICAL_FRONTEND_URL = "https://ai-adaptive-interview-liart.vercel.app"
+FRONTEND_URL = os.getenv("FRONTEND_URL", CANONICAL_FRONTEND_URL).rstrip("/")
+if "ai-adaptive-interview.vercel.app" in FRONTEND_URL and "liart" not in FRONTEND_URL:
+    FRONTEND_URL = CANONICAL_FRONTEND_URL
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://localhost:3000",
@@ -156,6 +160,146 @@ def get_interview_or_404(interview_id: str) -> Dict[str, Any]:
 
 def get_answer_history(interview_id: str) -> List[Dict[str, Any]]:
     return list(answers_collection.find({"interview_id": interview_id}).sort("question_id", 1))
+
+
+def normalize_candidate_name(name: str) -> List[str]:
+    cleaned = re.sub(r"[^a-zA-Z\s]", " ", (name or "").lower())
+    tokens = [token for token in cleaned.split() if token]
+    suffixes = {"mr", "mrs", "ms", "dr", "jr", "sr"}
+    return [token for token in tokens if token not in suffixes]
+
+
+def compare_candidate_names(manual_name: str, detected_name: str) -> Dict[str, Any]:
+    manual_tokens = normalize_candidate_name(manual_name)
+    detected_tokens = normalize_candidate_name(detected_name)
+    if not manual_tokens or not detected_tokens:
+        return {
+            "manual_name": manual_name,
+            "detected_name": detected_name,
+            "similarity": 0.0,
+            "matches": True,
+            "reason": "insufficient_data",
+        }
+
+    manual_joined = " ".join(manual_tokens)
+    detected_joined = " ".join(detected_tokens)
+    sequence_score = SequenceMatcher(None, manual_joined, detected_joined).ratio()
+    overlap_score = len(set(manual_tokens) & set(detected_tokens)) / max(len(set(manual_tokens)), len(set(detected_tokens)))
+    subset_score = 0.92 if set(manual_tokens).issubset(set(detected_tokens)) or set(detected_tokens).issubset(set(manual_tokens)) else 0.0
+    similarity = round(max(sequence_score, overlap_score, subset_score), 3)
+    matches = similarity >= 0.7
+    reason = "matched" if matches else "mismatch"
+    return {
+        "manual_name": manual_name,
+        "detected_name": detected_name,
+        "similarity": similarity,
+        "matches": matches,
+        "reason": reason,
+    }
+
+
+def build_candidate_session_link(link_id: str) -> str:
+    return f"{FRONTEND_URL.rstrip('/')}/index.html?session_id={link_id}"
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def compute_integrity_report(session_data: Dict[str, Any], answers_data: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    answers_data = answers_data or []
+    live_monitoring = session_data.get("live_monitoring") or {}
+    violations = session_data.get("violations") or []
+
+    totals = {
+        "tab_switches": _safe_int(live_monitoring.get("tab_switch_count")) + sum(_safe_int(a.get("tab_switches")) for a in answers_data),
+        "face_alerts": _safe_int(live_monitoring.get("face_alert_count")) + sum(_safe_int(a.get("face_alerts")) for a in answers_data),
+        "multiple_faces": _safe_int(live_monitoring.get("multiple_face_count")),
+        "invisible_face_count": _safe_int(live_monitoring.get("invisible_face_count")),
+        "movement_violations": _safe_int(live_monitoring.get("movement_count")),
+        "fullscreen_exits": _safe_int(live_monitoring.get("fullscreen_exit_count")),
+        "background_noise_alerts": _safe_int(live_monitoring.get("background_noise_alerts")),
+        "object_alerts": _safe_int(live_monitoring.get("object_alert_count")),
+        "suspicious_behavior_count": _safe_int(live_monitoring.get("suspicious_behavior_count")),
+        "violation_events": len(violations),
+    }
+
+    score = 100
+    score -= totals["tab_switches"] * 6
+    score -= totals["face_alerts"] * 2
+    score -= totals["multiple_faces"] * 18
+    score -= totals["invisible_face_count"] * 10
+    score -= totals["movement_violations"] * 7
+    score -= totals["fullscreen_exits"] * 10
+    score -= totals["background_noise_alerts"] * 3
+    score -= totals["object_alerts"] * 8
+    score -= totals["suspicious_behavior_count"] * 4
+    score = max(0, min(100, score))
+
+    if session_data.get("auto_terminated"):
+        risk_classification = "Critical"
+    elif score >= 85:
+        risk_classification = "Low"
+    elif score >= 65:
+        risk_classification = "Moderate"
+    elif score >= 40:
+        risk_classification = "High"
+    else:
+        risk_classification = "Critical"
+
+    summary_bits = []
+    if totals["multiple_faces"]:
+        summary_bits.append(f"multiple faces detected {totals['multiple_faces']} time(s)")
+    if totals["invisible_face_count"]:
+        summary_bits.append(f"face missing {totals['invisible_face_count']} time(s)")
+    if totals["movement_violations"]:
+        summary_bits.append(f"camera/head instability recorded {totals['movement_violations']} time(s)")
+    if totals["fullscreen_exits"]:
+        summary_bits.append(f"fullscreen exited {totals['fullscreen_exits']} time(s)")
+    if totals["tab_switches"]:
+        summary_bits.append(f"tab switching detected {totals['tab_switches']} time(s)")
+    if totals["background_noise_alerts"]:
+        summary_bits.append(f"background noise threshold triggered {totals['background_noise_alerts']} time(s)")
+    if not summary_bits:
+        summary_bits.append("No major integrity anomalies were recorded.")
+
+    return {
+        **totals,
+        "integrity_score": score,
+        "risk_classification": risk_classification,
+        "termination_reason": session_data.get("termination_reason", ""),
+        "auto_terminated": bool(session_data.get("auto_terminated")),
+        "camera_stability": "Unstable" if totals["movement_violations"] >= 3 else "Stable",
+        "ai_summary": "Integrity review: " + "; ".join(summary_bits),
+    }
+
+
+def persist_integrity_evidence(interview_id: str, evidence_frame: str, label: str) -> str:
+    if not evidence_frame or not evidence_frame.startswith("data:image/"):
+        return ""
+    try:
+        header, encoded = evidence_frame.split(",", 1)
+        extension = "jpg" if "jpeg" in header or "jpg" in header else "png"
+        evidence_dir = os.path.join(UPLOAD_FOLDER, "integrity")
+        os.makedirs(evidence_dir, exist_ok=True)
+        filename = f"{interview_id}_{label}_{int(time.time())}.{extension}"
+        file_path = os.path.join(evidence_dir, filename)
+        with open(file_path, "wb") as handle:
+            handle.write(base64.b64decode(encoded))
+        return file_path.replace("\\", "/")
+    except Exception as exc:
+        print(f"Integrity evidence save failed: {exc}")
+        return ""
 
 
 def build_answer_summary(answers_data: List[Dict[str, Any]]) -> str:
@@ -1218,6 +1362,50 @@ class ViolationRequest(BaseModel):
     type: str
     count: int
     timestamp: str
+    detail: str = ""
+    phase: str = ""
+    question_id: Optional[int] = None
+    evidence_frame: str = ""
+
+
+class LiveMonitoringUpdate(BaseModel):
+    current_question_id: Optional[int] = None
+    current_question_text: str = ""
+    phase: str = "verbal"
+    elapsed_seconds: int = 0
+    time_remaining_seconds: int = 0
+    audio_level: float = 0
+    speaking: bool = False
+    silence_seconds: int = 0
+    face_status: str = "Unknown"
+    multiple_face_count: int = 0
+    invisible_face_count: int = 0
+    movement_count: int = 0
+    fullscreen_exit_count: int = 0
+    tab_switch_count: int = 0
+    face_alert_count: int = 0
+    background_noise_alerts: int = 0
+    object_alert_count: int = 0
+    suspicious_behavior_count: int = 0
+    integrity_risk_score: int = 0
+    integrity_health_status: str = "Monitoring"
+    warnings: List[str] = []
+    camera_frame: str = ""
+    mic_active: bool = False
+    interviewer_prompt: str = ""
+    auto_terminated: bool = False
+    termination_reason: str = ""
+
+
+class IntegrityTerminationRequest(BaseModel):
+    type: str
+    reason: str
+    count: int = 0
+    timestamp: str
+    phase: str = ""
+    question_id: Optional[int] = None
+    evidence_frame: str = ""
+    interview_duration_seconds: int = 0
 
 def generate_followup_question(answer_text: str, resume_context: str, jd_text: str, current_q_id: int, followup_streak: int) -> Dict:
     if followup_streak < 3:
@@ -1996,12 +2184,14 @@ def get_interview_details(link_id: str):
     saved_avg = session_data.get("avg_score")
     current_status = session_data.get("status")
     candidate_email = session_data.get("candidate_email")
+    live_monitoring = session_data.get("live_monitoring") or {}
+    violations = session_data.get("violations") or []
 
     # Disabled: admin result reads must not mutate candidate session status.
     if False and current_status == 'started' and actual_interview_id:
         if answers_collection.find_one({"interview_id": actual_interview_id}):
             print(f"🔄 Fallback: Marking session {link_id} as completed because results exist.")
-            interview_sessions_collection.update_one({"link_id": link_id}, {"$set": {"status": "completed"}})
+            interview_sessions_collection.update_one({"link_id": link_id}, {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}})
 
     # Fetch recording path from interviews table
     recording_url = None
@@ -2052,29 +2242,35 @@ def get_interview_details(link_id: str):
         scores = [r["ai_score"] for r in results if r["ai_score"] is not None]
         avg_score = round(sum(scores) / len(scores), 1) if scores else 0
 
-    # Use cached values if available, else generate
-    if saved_rec:
-        recommendation = saved_rec
-        strengths = saved_str
-        weaknesses = saved_wk
-    else:
-        summary = generate_interview_summary(candidate_name or "Candidate", results)
-        recommendation = summary.get("recommendation", "No Data")
-        strengths = summary.get("strengths", "")
-        weaknesses = summary.get("weaknesses", "")
-        # Cache in DB
-        try:
-            interview_sessions_collection.update_one(
-                {"link_id": link_id},
-                {"$set": {
-                    "overall_recommendation": recommendation,
-                    "strengths_summary": strengths,
-                    "weaknesses_summary": weaknesses,
-                    "avg_score": avg_score
-                }}
-            )
-        except Exception as e:
-            print(f"Summary cache error: {e}")
+    recommendation = saved_rec or "In Progress"
+    strengths = saved_str or "Interview is still in progress."
+    weaknesses = saved_wk or "Final evaluation will be generated after completion."
+    summary_ready = current_status == "completed"
+
+    if summary_ready:
+        if saved_rec:
+            recommendation = saved_rec
+            strengths = saved_str
+            weaknesses = saved_wk
+        else:
+            summary = generate_interview_summary(candidate_name or "Candidate", results)
+            recommendation = summary.get("recommendation", "No Data")
+            strengths = summary.get("strengths", "")
+            weaknesses = summary.get("weaknesses", "")
+            try:
+                interview_sessions_collection.update_one(
+                    {"link_id": link_id},
+                    {"$set": {
+                        "overall_recommendation": recommendation,
+                        "strengths_summary": strengths,
+                        "weaknesses_summary": weaknesses,
+                        "avg_score": avg_score
+                    }}
+                )
+            except Exception as e:
+                print(f"Summary cache error: {e}")
+
+    integrity_report = compute_integrity_report(session_data, list(answers_collection.find({"interview_id": actual_interview_id})) if actual_interview_id else [])
 
     return {
         "interview_id": link_id,
@@ -2087,11 +2283,19 @@ def get_interview_details(link_id: str):
         "strengths_summary": strengths,
         "weaknesses_summary": weaknesses,
         "recording_url": recording_url,
+        "decision": session_data.get("decision"),
+        "session_status": current_status,
+        "summary_ready": summary_ready,
+        "live_monitoring": live_monitoring,
+        "violations": violations,
+        "termination_reason": session_data.get("termination_reason", ""),
+        "auto_terminated": bool(session_data.get("auto_terminated")),
         "integrity": {
             "total_tab_switches": total_tab_switches,
             "total_face_alerts": total_face_alerts,
             "total_time_minutes": round(total_time / 60, 1)
         },
+        "integrity_report": integrity_report,
         "answers": results
     }
 
@@ -2189,7 +2393,10 @@ def generate_report(interview_id: str):
     
     # Fetch Q&A data
     answers_cursor = answers_collection.find({"interview_id": interview_id}).sort("question_id", 1)
-    answers = [(a.get("question_text"), a.get("answer_text"), a.get("ai_score"), a.get("ai_feedback"), a.get("corrected_answer")) for a in answers_cursor]
+    answer_docs = list(answers_cursor)
+    answers = [(a.get("question_text"), a.get("answer_text"), a.get("ai_score"), a.get("ai_feedback"), a.get("corrected_answer")) for a in answer_docs]
+    session_data = interview_sessions_collection.find_one({"interview_id": interview_id}) or {}
+    integrity_report = compute_integrity_report(session_data, answer_docs)
     
     # Generate PDF
     pdf_filename = f"Interview_Report_{interview_id}.pdf"
@@ -2223,6 +2430,16 @@ def generate_report(interview_id: str):
         story.append(Paragraph("<b>Overall Score:</b> N/A", normal_style))
     
     story.append(Spacer(1, 20))
+
+    story.append(Paragraph("<b>Integrity Summary</b>", styles['Heading3']))
+    story.append(Paragraph(f"<b>Integrity Score:</b> {integrity_report.get('integrity_score', 0)}/100", normal_style))
+    story.append(Paragraph(f"<b>Risk Classification:</b> {integrity_report.get('risk_classification', 'Low')}", normal_style))
+    story.append(Paragraph(f"<b>Multiple Faces:</b> {integrity_report.get('multiple_faces', 0)} | <b>Invisible Face:</b> {integrity_report.get('invisible_face_count', 0)} | <b>Movement:</b> {integrity_report.get('movement_violations', 0)}", normal_style))
+    story.append(Paragraph(f"<b>Tab Switches:</b> {integrity_report.get('tab_switches', 0)} | <b>Fullscreen Exits:</b> {integrity_report.get('fullscreen_exits', 0)} | <b>Noise Alerts:</b> {integrity_report.get('background_noise_alerts', 0)}", normal_style))
+    if integrity_report.get('termination_reason'):
+        story.append(Paragraph(f"<b>Termination Reason:</b> {integrity_report.get('termination_reason')}", normal_style))
+    story.append(Paragraph(integrity_report.get('ai_summary', 'Integrity review unavailable.'), normal_style))
+    story.append(Spacer(1, 18))
     
     # Q&A Details
     for i, row in enumerate(answers):
@@ -2290,6 +2507,9 @@ class CreateSession(BaseModel):
     custom_email_html: str = ""  # Task 1: Admin-editable email content
     scheduled_start: str = ""  # Task 4: ISO datetime for scheduled start
     scheduled_end: str = ""    # Task 4: ISO datetime for scheduled end
+    resume_detected_name: str = ""
+    resume_name_similarity: float = 0
+    resume_name_confirmed: bool = False
 
 class ForgotPasswordRequest(BaseModel):
     username: str
@@ -2911,7 +3131,7 @@ def process_pending_invitation_emails():
         if claimed.modified_count == 0:
             continue
 
-        link_url = f"{FRONTEND_URL}/index.html?session_id={session['link_id']}"
+        link_url = build_candidate_session_link(session['link_id'])
         sent = send_interview_email(
             candidate_email=session.get("candidate_email", ""),
             candidate_name=session.get("candidate_name", ""),
@@ -3100,7 +3320,8 @@ async def parse_resume(file: UploadFile = File(...)):
         "status": "success", 
         "text": text,
         "name": info.get("name"),
-        "email": info.get("email")
+        "email": info.get("email"),
+        "normalized_name": " ".join(normalize_candidate_name(info.get("name") or ""))
     }
 
 from datetime import timedelta
@@ -3119,6 +3340,10 @@ async def create_session(data: CreateSession):
     else:
         expires_at = (now + timedelta(hours=24)).isoformat()
     
+    name_validation = compare_candidate_names(data.candidate_name, data.resume_detected_name) if data.resume_detected_name else {"matches": True, "similarity": 1.0, "manual_name": data.candidate_name, "detected_name": "", "reason": "not_available"}
+    if data.resume_detected_name and not name_validation.get("matches") and not data.resume_name_confirmed:
+        raise HTTPException(status_code=400, detail="Candidate name does not match the uploaded resume. Please review and confirm.")
+
     session_doc = {
         "link_id": link_id,
         "candidate_name": data.candidate_name,
@@ -3131,7 +3356,11 @@ async def create_session(data: CreateSession):
         "expires_at": expires_at,
         "interview_duration": data.interview_duration,
         "record_video": data.record_video,
-        "status": "pending"
+        "status": "pending",
+        "resume_detected_name": data.resume_detected_name,
+        "resume_name_similarity": name_validation.get("similarity", data.resume_name_similarity or 0),
+        "resume_name_confirmed": bool(data.resume_name_confirmed or name_validation.get("matches")),
+        "name_validation": name_validation,
     }
     
     # Task 4: Store scheduled time window
@@ -3143,7 +3372,7 @@ async def create_session(data: CreateSession):
     interview_sessions_collection.insert_one(session_doc)
     session_doc["_id"] = interview_sessions_collection.find_one({"link_id": link_id}, {"_id": 1})["_id"]
     
-    link_url = f"{FRONTEND_URL}/index.html?session_id={link_id}"
+    link_url = build_candidate_session_link(link_id)
     
     email_result = queue_or_send_interview_email(session_doc, link_url)
     
@@ -3153,7 +3382,8 @@ async def create_session(data: CreateSession):
         "link_url": link_url,
         "email_sent": email_result["email_sent"],
         "email_scheduled": email_result["email_scheduled"],
-        "email_send_at": email_result["email_send_at"]
+        "email_send_at": email_result["email_send_at"],
+        "name_validation": name_validation
     }
 
 
@@ -3189,7 +3419,7 @@ async def bulk_create_sessions(data: BulkCreateSession):
 
     for candidate in data.candidates:
         link_id = str(uuid.uuid4())
-        link_url = f"{FRONTEND_URL}/index.html?session_id={link_id}"
+        link_url = build_candidate_session_link(link_id)
         candidate_error = None
 
         try:
@@ -3563,6 +3793,65 @@ async def start_session_interview(link_id: str = Form(...)):
         "record_video": row.get("record_video", True)
     }
 
+@app.post("/session/{interview_id}/live-update")
+async def update_live_monitoring(interview_id: str, payload: LiveMonitoringUpdate):
+    session = interview_sessions_collection.find_one({"interview_id": interview_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    live_monitoring = payload.dict()
+    live_monitoring["updated_at"] = datetime.now(timezone.utc).isoformat()
+    interview_sessions_collection.update_one(
+        {"interview_id": interview_id},
+        {"$set": {
+            "live_monitoring": live_monitoring,
+            "last_activity_at": live_monitoring["updated_at"],
+            "status": "completed" if payload.auto_terminated and session.get("status") == "completed" else session.get("status", "started")
+        }}
+    )
+    refreshed = interview_sessions_collection.find_one({"interview_id": interview_id}) or session
+    return {
+        "status": "success",
+        "auto_terminated": bool(refreshed.get("auto_terminated")),
+        "termination_reason": refreshed.get("termination_reason", "")
+    }
+
+
+@app.post("/session/{interview_id}/terminate")
+async def terminate_interview_for_integrity(interview_id: str, payload: IntegrityTerminationRequest):
+    session = interview_sessions_collection.find_one({"interview_id": interview_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    evidence_path = persist_integrity_evidence(interview_id, payload.evidence_frame, payload.type or "termination")
+    event = {
+        "type": payload.type,
+        "count": payload.count,
+        "timestamp": payload.timestamp,
+        "detail": payload.reason,
+        "phase": payload.phase,
+        "question_id": payload.question_id,
+        "evidence_path": evidence_path,
+        "termination_triggered": True,
+    }
+    interview_sessions_collection.update_one(
+        {"interview_id": interview_id},
+        {
+            "$set": {
+                "auto_terminated": True,
+                "termination_reason": payload.reason,
+                "completed_by": "integrity",
+                "termination_type": payload.type,
+                "live_monitoring.auto_terminated": True,
+                "live_monitoring.termination_reason": payload.reason,
+                "live_monitoring.updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "$push": {"violations": event}
+        }
+    )
+    return {"status": "success", "termination_reason": payload.reason}
+
+
 @app.post("/session/{interview_id}/violation")
 async def log_violation(interview_id: str, violation: ViolationRequest):
     print(f"⚠️ VIOLATION detected for session {interview_id}: {violation.type} (#{violation.count}) at {violation.timestamp}")
@@ -3664,7 +3953,7 @@ def send_decision_email(email: str, name: str, decision: str, jd: str):
 async def complete_session(link_id: str):
     """Mark a session as completed and send notification emails (Task 3)."""
     try:
-        interview_sessions_collection.update_one({"link_id": link_id}, {"$set": {"status": "completed"}})
+        interview_sessions_collection.update_one({"link_id": link_id}, {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}})
         
         # Task 3: Send submission notification to admin and candidate
         try:
