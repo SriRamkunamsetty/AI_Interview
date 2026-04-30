@@ -2612,7 +2612,7 @@ def generate_job_description_pdf_base64(job_description: str) -> str:
 def build_job_description_block(job_description: str) -> str:
     text = (job_description or "").strip()
     if not text:
-        return '<p style="margin: 0; color: #64748b; font-size: 14px; line-height: 1.5;">Job description will be shared separately.</p>'
+        return '<p style="margin: 0; color: #64748b; font-size: 14px; line-height: 1.5;">Not provided</p>'
 
     if should_attach_job_description_pdf(text):
         summary = html.escape(textwrap.shorten(" ".join(text.split()), width=260, placeholder="..."))
@@ -2651,6 +2651,8 @@ def build_schedule_block(scheduled_start: str = "", scheduled_end: str = "") -> 
 def build_default_interview_email_html(candidate_name: str, duration: int, job_description: str, full_link: str, scheduled_start: str = "", scheduled_end: str = "") -> str:
     schedule_block = build_schedule_block(scheduled_start, scheduled_end)
     job_description_block = build_job_description_block(job_description)
+    safe_candidate_name = html.escape((candidate_name or "").strip() or "Not provided")
+    duration_label = f"{duration} minutes" if isinstance(duration, int) and duration > 0 else "Not provided"
 
     return f"""
     <html>
@@ -2659,13 +2661,13 @@ def build_default_interview_email_html(candidate_name: str, duration: int, job_d
             <h1 style="color: white; margin: 0; font-size: 24px;">Interview Invitation</h1>
         </div>
         <div style="background: white; border-radius: 0 0 12px 12px; padding: 30px; border: 1px solid #e2e8f0; border-top: none;">
-            <p style="font-size: 16px; color: #334155;">Dear <b>{html.escape(candidate_name)}</b>,</p>
+            <p style="font-size: 16px; color: #334155;">Dear <b>{safe_candidate_name}</b>,</p>
             <p style="color: #475569; line-height: 1.6;">You have been invited to an AI-powered interview by <b style="color: #6366f1;">Arah Info Tech</b>.</p>
             <div style="background: #f1f5f9; border-radius: 8px; padding: 15px; margin: 15px 0; border-left: 4px solid #6366f1;">
                 <p style="margin: 0 0 5px; font-weight: 600; color: #334155;">Role Details:</p>
                 {job_description_block}
             </div>
-            <p style="color: #475569;"><b>Duration:</b> {duration} minutes</p>
+            <p style="color: #475569;"><b>Duration:</b> {duration_label}</p>
             {schedule_block}
             <div style="text-align: center; margin: 25px 0;">
                 <a href="{full_link}" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; display: inline-block; box-shadow: 0 4px 12px rgba(99,102,241,0.3);">
@@ -2857,6 +2859,7 @@ def send_interview_email(candidate_email: str, candidate_name: str, link_url: st
         scheduled_start=scheduled_start,
         scheduled_end=scheduled_end
     )
+    html_content = html_content.replace("{{INTERVIEW_LINK}}", full_link)
 
     payload = {
         "sender": {"name": sender_name, "email": sender_email},

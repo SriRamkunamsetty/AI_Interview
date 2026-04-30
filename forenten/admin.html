@@ -2858,6 +2858,9 @@
         let adminEmail = "";
         let liveResultsPoller = null;
         window._parsedResumeName = "";
+        window._emailPreviewContext = null;
+        window._lastGeneratedInterviewLink = "";
+        window._lastGeneratedLinkId = "";
 
         function normalizeNameTokens(name) {
             return String(name || '')
@@ -2998,6 +3001,122 @@
 
             const relative = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
             return `${frontendBase}${relative}`;
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function getPreviewCompanyName() {
+            return window.APP_CONFIG?.COMPANY_NAME || 'Arah Info Tech Pvt Ltd';
+        }
+
+        function getResumeMetadataLabel() {
+            const file = document.getElementById('resumeFile')?.files?.[0];
+            const parts = [];
+            if (file?.name) parts.push(file.name);
+            if (window._parsedResumeName) parts.push(`Detected name: ${window._parsedResumeName}`);
+            return parts.length ? parts.join(' | ') : 'Not provided';
+        }
+
+        function collectSingleEmailPreviewState() {
+            const candidateNameRaw = document.getElementById('candidateName').value.trim();
+            const candidateEmailRaw = document.getElementById('candidateEmail').value.trim();
+            const jobDescriptionRaw = document.getElementById('jobDescription').value.trim();
+            const durationRaw = document.getElementById('interviewDuration').value.trim();
+            const scheduleStart = document.getElementById('scheduleStart').value;
+            const scheduleEnd = document.getElementById('scheduleEnd').value;
+            const generatedLink = window._lastGeneratedInterviewLink || '';
+            const duration = durationRaw ? parseInt(durationRaw, 10) || 0 : 0;
+
+            return {
+                candidateName: candidateNameRaw || 'Not provided',
+                candidateEmail: candidateEmailRaw || 'Not provided',
+                jobDescription: jobDescriptionRaw || 'Not provided',
+                duration,
+                durationLabel: duration > 0 ? `${duration} minutes` : 'Not provided',
+                scheduledStart: scheduleStart,
+                scheduledEnd: scheduleEnd,
+                generatedLink,
+                generatedLinkLabel: generatedLink || 'Not generated yet',
+                companyName: getPreviewCompanyName(),
+                resumeMetadata: getResumeMetadataLabel()
+            };
+        }
+
+        function collectBulkEmailPreviewState() {
+            const firstCandidate = bulkCandidates.length > 0 ? bulkCandidates[0] : null;
+            const candidateNameRaw = firstCandidate?.name?.trim() || '';
+            const candidateEmailRaw = firstCandidate?.email?.trim() || '';
+            const jobDescriptionRaw = document.getElementById('bulkJobDescription').value.trim();
+            const durationRaw = document.getElementById('bulkDuration').value.trim();
+            const scheduleStart = document.getElementById('bulkScheduleStart').value;
+            const scheduleEnd = document.getElementById('bulkScheduleEnd').value;
+            const duration = durationRaw ? parseInt(durationRaw, 10) || 0 : 0;
+
+            return {
+                candidateName: candidateNameRaw || 'Not provided',
+                candidateEmail: candidateEmailRaw || 'Not provided',
+                jobDescription: jobDescriptionRaw || 'Not provided',
+                duration,
+                durationLabel: duration > 0 ? `${duration} minutes` : 'Not provided',
+                scheduledStart: scheduleStart,
+                scheduledEnd: scheduleEnd,
+                generatedLink: '',
+                generatedLinkLabel: 'Generated per candidate when links are created',
+                companyName: getPreviewCompanyName(),
+                resumeMetadata: firstCandidate?.resume_text ? 'Resume text available' : 'Not provided'
+            };
+        }
+
+        function renderEmailPreviewHtml(baseHtml, previewState) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(baseHtml, 'text/html');
+            const previewLinkHref = previewState.generatedLink || '#';
+            const previewLinkLabel = previewState.generatedLinkLabel || 'Not generated yet';
+
+            doc.querySelectorAll('a[href="{{INTERVIEW_LINK}}"]').forEach((anchor) => {
+                anchor.setAttribute('href', previewLinkHref);
+                anchor.setAttribute('data-preview-link-token', 'true');
+            });
+
+            const detailCard = doc.createElement('div');
+            detailCard.setAttribute('data-email-preview-artifact', 'true');
+            detailCard.style.cssText = 'background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:14px 16px;margin:18px 0;';
+            detailCard.innerHTML = `
+                <p style="margin:0 0 8px;font-weight:700;color:#3730a3;">Preview Details</p>
+                <p style="margin:0 0 6px;color:#475569;font-size:13px;"><b>Candidate Email:</b> ${escapeHtml(previewState.candidateEmail)}</p>
+                <p style="margin:0 0 6px;color:#475569;font-size:13px;"><b>Interview Link:</b> ${escapeHtml(previewLinkLabel)}</p>
+                <p style="margin:0 0 6px;color:#475569;font-size:13px;"><b>Company:</b> ${escapeHtml(previewState.companyName)}</p>
+                <p style="margin:0;color:#475569;font-size:13px;"><b>Resume Metadata:</b> ${escapeHtml(previewState.resumeMetadata)}</p>
+            `;
+
+            const buttonContainer = doc.querySelector('a[data-preview-link-token="true"]')?.parentElement;
+            if (buttonContainer?.parentElement) {
+                buttonContainer.insertAdjacentElement('afterend', detailCard);
+            } else {
+                doc.body.appendChild(detailCard);
+            }
+
+            return `<!DOCTYPE html><html><head>${doc.head ? doc.head.innerHTML : ''}</head><body>${doc.body ? doc.body.innerHTML : baseHtml}</body></html>`;
+        }
+
+        function stripPreviewArtifactsFromHtml(html, previewState) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            doc.querySelectorAll('[data-email-preview-artifact="true"]').forEach((node) => node.remove());
+            doc.querySelectorAll('a[data-preview-link-token="true"]').forEach((anchor) => {
+                anchor.setAttribute('href', '{{INTERVIEW_LINK}}');
+                anchor.removeAttribute('data-preview-link-token');
+            });
+
+            return `<!DOCTYPE html><html><head>${doc.head ? doc.head.innerHTML : ''}</head><body>${doc.body ? doc.body.innerHTML : html}</body></html>`;
         }
 
         function focusLoginForm() {
@@ -3279,6 +3398,8 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                     if (data.name_validation && !data.name_validation.matches) {
                         showToast('Name mismatch was confirmed and recorded for audit.', 'warning');
                     }
+                    window._lastGeneratedInterviewLink = normalizeFrontendUrl(data.link_url || data.interview_link || '');
+                    window._lastGeneratedLinkId = data.link_id || "";
                     addSessionToUI(name, data.link_url, data.link_id);
 
                     // Clear form
@@ -3292,6 +3413,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                     document.getElementById('fileLabel').textContent = 'Click to upload or drag and drop';
                     document.getElementById('fileStatus').innerHTML = '';
                     window._customEmailHtml = ""; // Reset custom email
+                    window._parsedResumeName = "";
 
                 } else {
                     showToast("Failed to create session.", "error");
@@ -4059,24 +4181,20 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
         }
 
         async function previewEmail() {
-            const name = document.getElementById('candidateName').value.trim() || 'Candidate Name';
-            const email = document.getElementById('candidateEmail').value.trim() || 'candidate@example.com';
-            const jd = document.getElementById('jobDescription').value.trim() || 'Job description will appear here';
-            const duration = parseInt(document.getElementById('interviewDuration').value) || 30;
-            const schedStart = document.getElementById('scheduleStart').value;
-            const schedEnd = document.getElementById('scheduleEnd').value;
+            const previewState = collectSingleEmailPreviewState();
+            window._emailPreviewContext = previewState;
 
             try {
                 const res = await fetch(`${API_BASE}/admin/preview-email`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        candidate_name: name,
-                        candidate_email: email,
-                        job_description: jd,
-                        interview_duration: duration,
-                        scheduled_start: toUtcIso(schedStart),
-                        scheduled_end: toUtcIso(schedEnd)
+                        candidate_name: previewState.candidateName,
+                        candidate_email: previewState.candidateEmail,
+                        job_description: previewState.jobDescription,
+                        duration: previewState.duration,
+                        scheduled_start: toUtcIso(previewState.scheduledStart),
+                        scheduled_end: toUtcIso(previewState.scheduledEnd)
                     })
                 });
                 if (!res.ok) throw new Error('Failed to get preview');
@@ -4084,7 +4202,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
 
                 // Show preview modal
                 const modal = document.getElementById('emailPreviewModal');
-                parseEmailHtml(data.html);
+                parseEmailHtml(renderEmailPreviewHtml(data.html, previewState));
                 initializeEmailTextEditor();
                 bindPreviewEditing();
                 updateEmailPreviewFrame();
@@ -4095,24 +4213,20 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
         }
 
         async function previewBulkEmail() {
-            const name = bulkCandidates.length > 0 ? bulkCandidates[0].name : 'Candidate Name';
-            const email = bulkCandidates.length > 0 ? bulkCandidates[0].email : 'candidate@example.com';
-            const jd = document.getElementById('bulkJobDescription').value.trim() || 'Job description will appear here';
-            const duration = parseInt(document.getElementById('bulkDuration').value) || 30;
-            const schedStart = document.getElementById('bulkScheduleStart').value;
-            const schedEnd = document.getElementById('bulkScheduleEnd').value;
+            const previewState = collectBulkEmailPreviewState();
+            window._emailPreviewContext = previewState;
 
             try {
                 const res = await fetch(`${API_BASE}/admin/preview-email`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        candidate_name: name,
-                        candidate_email: email,
-                        job_description: jd,
-                        interview_duration: duration,
-                        scheduled_start: toUtcIso(schedStart),
-                        scheduled_end: toUtcIso(schedEnd)
+                        candidate_name: previewState.candidateName,
+                        candidate_email: previewState.candidateEmail,
+                        job_description: previewState.jobDescription,
+                        duration: previewState.duration,
+                        scheduled_start: toUtcIso(previewState.scheduledStart),
+                        scheduled_end: toUtcIso(previewState.scheduledEnd)
                     })
                 });
                 if (!res.ok) throw new Error('Failed to get preview');
@@ -4120,7 +4234,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
 
                 // Show preview modal
                 const modal = document.getElementById('emailPreviewModal');
-                parseEmailHtml(data.html);
+                parseEmailHtml(renderEmailPreviewHtml(data.html, previewState));
                 initializeEmailTextEditor();
                 bindPreviewEditing();
                 updateEmailPreviewFrame();
@@ -4132,7 +4246,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
 
         function saveEmailPreview() {
             syncEmailPreviewFromEditor();
-            window._customEmailHtml = buildEmailHtmlFromState();
+            window._customEmailHtml = stripPreviewArtifactsFromHtml(buildEmailHtmlFromState(), window._emailPreviewContext || {});
             document.getElementById('emailPreviewModal').classList.add('hidden');
             showToast('Custom email saved! It will be used when you create the interview.', 'success');
         }
