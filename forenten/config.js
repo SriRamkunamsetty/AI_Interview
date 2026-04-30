@@ -5,7 +5,7 @@
     const config = {
         API_BASE_URL: isLocal
             ? "http://127.0.0.1:8000"
-            : "https://ai-adaptive-interview-1hsw.onrender.com",
+            : "https://ai-adaptive-interview-api-v2.onrender.com",
         FRONTEND_BASE_URL: isLocal
             ? `${window.location.protocol}//${window.location.host}`
             : "https://ai-adaptive-interview-liart.vercel.app"

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: ai-adaptive-interview-api
+    name: ai-adaptive-interview-api-v2
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
