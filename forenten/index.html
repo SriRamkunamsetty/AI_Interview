@@ -2449,9 +2449,21 @@
             liveMonitoringTick += 1;
             const shouldAttachFrame = forceFrame || liveMonitoringTick % 3 === 0;
             const speakingRecently = (Date.now() - ((_qTrack && _qTrack.lastSpeechTime) || 0)) < 1400;
+            const transcriptText = document.getElementById('transcriptionBox')?.value || '';
+            const transcriptWords = transcriptText.trim() ? transcriptText.trim().split(/\s+/).filter(Boolean).length : 0;
+            const activeQuestionIndex = Math.max(1, Number(currentQuestionId || 1));
+            const safeTotalQuestions = Math.max(activeQuestionIndex, Number(totalQuestions || 0));
+            const progressPct = safeTotalQuestions > 0 ? Math.min(100, Math.round((activeQuestionIndex / safeTotalQuestions) * 1000) / 10) : 0;
+            const latestBehavioralWpm = typeof calculateWPM === 'function' ? calculateWPM() : 0;
+            const keywordBoost = Math.min(20, Math.round((Math.min(transcriptWords, 120) / 120) * 20));
+            const communicationScore = Math.max(0, Math.min(100, 58 + keywordBoost + (speakingRecently ? 10 : 0) - Math.min((_qTrack?.fillerCount || 0) * 2, 16) - Math.min((_qTrack?.pauseCount || 0), 10)));
+            const confidenceScore = Math.max(0, Math.min(100, Math.round(((communicationScore * 0.55) + ((100 - computeIntegrityRiskScore()) * 0.45)) * 10) / 10));
             const payload = {
                 current_question_id: currentQuestionId || null,
                 current_question_text: document.getElementById('questionText')?.innerText || '',
+                question_index: activeQuestionIndex,
+                total_questions: safeTotalQuestions,
+                progress_pct: progressPct,
                 phase: currentInterviewPhase(),
                 elapsed_seconds: globalTotalTime > 0 ? Math.max(0, globalTotalTime - globalTimeRemaining) : Math.round((Date.now() - (_qTrack.startTime || Date.now())) / 1000),
                 time_remaining_seconds: Math.max(0, globalTimeRemaining || 0),
@@ -2474,6 +2486,12 @@
                 camera_frame: shouldAttachFrame ? collectCameraFrame() : '',
                 mic_active: Boolean(videoRecorder && videoRecorder.isRecording),
                 interviewer_prompt: document.getElementById('codingInterviewerPrompt')?.textContent || currentObjectStatus,
+                current_transcript: transcriptText,
+                transcript_word_count: transcriptWords,
+                latest_answer_excerpt: transcriptText.trim().slice(0, 240),
+                currently_answering: Boolean(transcriptWords > 0 && !integrityState.autoTerminated),
+                communication_score: Number(communicationScore.toFixed(1)),
+                confidence_score: Number(confidenceScore.toFixed(1)),
                 auto_terminated: integrityState.autoTerminated,
                 termination_reason: integrityState.terminationReason || ''
             };

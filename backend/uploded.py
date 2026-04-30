@@ -339,6 +339,193 @@ def build_answer_summary(answers_data: List[Dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _question_pool_from_interview_doc(interview_doc: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not interview_doc:
+        return []
+    raw_questions = interview_doc.get("questions", [])
+    if isinstance(raw_questions, list):
+        return raw_questions
+    try:
+        return json.loads(raw_questions or "[]")
+    except Exception:
+        return []
+
+
+def _derive_live_confidence_score(live_monitoring: Dict[str, Any], latest_answer_score: Optional[float] = None) -> float:
+    explicit = live_monitoring.get("confidence_score")
+    if explicit is not None:
+        return round(_safe_float(explicit), 1)
+    if latest_answer_score is not None:
+        return round(_safe_float(latest_answer_score), 1)
+    risk = _safe_float(live_monitoring.get("integrity_risk_score"))
+    return round(max(0.0, min(100.0, 100.0 - risk)), 1)
+
+
+def _derive_communication_score(
+    live_monitoring: Dict[str, Any],
+    latest_answer: Optional[Dict[str, Any]] = None,
+) -> float:
+    explicit = live_monitoring.get("communication_score")
+    if explicit is not None:
+        return round(_safe_float(explicit), 1)
+
+    if latest_answer:
+        wpm = _safe_float(latest_answer.get("wpm"))
+        filler = _safe_int(latest_answer.get("filler_count"))
+        pauses = _safe_int(latest_answer.get("pause_count"))
+        keyword_pct = _safe_float(latest_answer.get("keyword_match_pct"))
+        score = 68.0
+        if wpm:
+            if 95 <= wpm <= 165:
+                score += 12
+            elif wpm < 75:
+                score -= 10
+            elif wpm > 185:
+                score -= 8
+        score += min(keyword_pct * 0.12, 12)
+        score -= min(filler * 2.5, 16)
+        score -= min(pauses * 1.5, 10)
+        return round(max(0.0, min(100.0, score)), 1)
+
+    return round(max(0.0, min(100.0, 100.0 - (_safe_float(live_monitoring.get("integrity_risk_score")) * 0.45))), 1)
+
+
+def _build_live_answers_snapshot(answer_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    snapshot = []
+    for row in answer_rows[-5:]:
+        answer_text = (row.get("answer_text") or "").strip()
+        snapshot.append({
+            "question_id": row.get("question_id"),
+            "question_text": row.get("question_text") or "",
+            "answer_text": answer_text,
+            "answer_excerpt": (answer_text[:220].rstrip() + "...") if len(answer_text) > 220 else answer_text,
+            "ai_score": row.get("ai_score"),
+            "ai_feedback": row.get("ai_feedback") or "",
+            "wpm": round(_safe_float(row.get("wpm")), 1),
+            "pause_count": _safe_int(row.get("pause_count")),
+            "filler_count": _safe_int(row.get("filler_count")),
+            "keyword_match_pct": round(_safe_float(row.get("keyword_match_pct")), 1),
+            "time_spent_seconds": _safe_int(row.get("time_spent_seconds")),
+            "tab_switches": _safe_int(row.get("tab_switches")),
+            "face_alerts": _safe_int(row.get("face_alerts")),
+            "created_at": row.get("created_at"),
+        })
+    return snapshot
+
+
+def _build_coding_round_snapshot(coding_round: Dict[str, Any]) -> Dict[str, Any]:
+    if not coding_round:
+        return {}
+
+    latest_feedback = coding_round.get("latest_feedback") or {}
+    latest_run = coding_round.get("latest_run") or {}
+    latest_observation = coding_round.get("last_observation") or {}
+    task = coding_round.get("task") or {}
+    scorecard = latest_feedback.get("scorecard") or {}
+
+    return {
+        "status": coding_round.get("status") or "not_started",
+        "language": coding_round.get("language") or task.get("recommended_language") or "python",
+        "title": task.get("title") or "Live coding round",
+        "difficulty": task.get("difficulty") or "Medium",
+        "updated_at": coding_round.get("updated_at") or coding_round.get("started_at"),
+        "latest_explanation": coding_round.get("latest_explanation") or "",
+        "latest_code_excerpt": ((coding_round.get("latest_code") or "")[:320].rstrip() + "...") if len((coding_round.get("latest_code") or "")) > 320 else (coding_round.get("latest_code") or ""),
+        "runtime_error": latest_run.get("runtime_error") or "",
+        "hidden_passed": _safe_int((latest_run.get("hidden_summary") or {}).get("passed")),
+        "hidden_total": _safe_int((latest_run.get("hidden_summary") or {}).get("total")),
+        "coach_message": latest_feedback.get("coach_message") or "",
+        "interviewer_prompt": latest_observation.get("interviewer_prompt") or "",
+        "inferred_intent": latest_observation.get("inferred_intent") or "",
+        "scorecard": {
+            "problem_understanding": scorecard.get("problem_understanding"),
+            "implementation": scorecard.get("implementation"),
+            "communication": scorecard.get("communication"),
+            "overall": scorecard.get("overall"),
+        },
+    }
+
+
+def _build_live_dashboard_metrics(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    ongoing_sessions = [s for s in sessions if (s.get("status") or "pending") == "started" and not s.get("is_deactivated", False)]
+    speaking_count = 0
+    live_coding_count = 0
+    integrity_alert_count = 0
+    monitoring_ready_count = 0
+    confidence_values: List[float] = []
+    active_sessions: List[Dict[str, Any]] = []
+
+    for session in ongoing_sessions:
+        live_monitoring = session.get("live_monitoring") or {}
+        violations = session.get("violations") or []
+        latest_answer_score = None
+        interview_id = session.get("interview_id")
+        if interview_id:
+            latest_answer = answers_collection.find_one(
+                {"interview_id": interview_id},
+                sort=[("question_id", -1)],
+            )
+            latest_answer_score = latest_answer.get("ai_score") if latest_answer else None
+
+        confidence_score = _derive_live_confidence_score(live_monitoring, latest_answer_score)
+        confidence_values.append(confidence_score)
+
+        if live_monitoring.get("speaking"):
+            speaking_count += 1
+        if (live_monitoring.get("phase") or "").lower() == "coding":
+            live_coding_count += 1
+        if live_monitoring.get("updated_at"):
+            monitoring_ready_count += 1
+
+        integrity_alert_count += (
+            _safe_int(live_monitoring.get("multiple_face_count"))
+            + _safe_int(live_monitoring.get("invisible_face_count"))
+            + _safe_int(live_monitoring.get("movement_count"))
+            + _safe_int(live_monitoring.get("fullscreen_exit_count"))
+            + _safe_int(live_monitoring.get("tab_switch_count"))
+            + _safe_int(live_monitoring.get("object_alert_count"))
+            + len(violations)
+        )
+
+        active_sessions.append({
+            "link_id": session.get("link_id"),
+            "candidate_name": session.get("candidate_name") or "Candidate",
+            "phase": live_monitoring.get("phase") or "verbal",
+            "speaking": bool(live_monitoring.get("speaking")),
+            "confidence_score": confidence_score,
+            "integrity_risk_score": _safe_int(live_monitoring.get("integrity_risk_score")),
+            "question_text": live_monitoring.get("current_question_text") or "",
+            "updated_at": live_monitoring.get("updated_at") or session.get("last_activity_at") or session.get("created_at"),
+        })
+
+    return {
+        "ongoing_count": len(ongoing_sessions),
+        "live_session_count": len(ongoing_sessions),
+        "monitoring_ready_count": monitoring_ready_count,
+        "integrity_alert_count": integrity_alert_count,
+        "avg_live_confidence_score": round(sum(confidence_values) / len(confidence_values), 1) if confidence_values else 0.0,
+        "currently_speaking_count": speaking_count,
+        "live_coding_sessions_count": live_coding_count,
+        "active_sessions": active_sessions[:6],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def persist_coding_round(interview_id: str, coding_round: Dict[str, Any]) -> None:
     if interview_id in interviews:
         interviews[interview_id]["coding_round"] = coding_round
@@ -1391,6 +1578,9 @@ class ViolationRequest(BaseModel):
 class LiveMonitoringUpdate(BaseModel):
     current_question_id: Optional[int] = None
     current_question_text: str = ""
+    question_index: int = 0
+    total_questions: int = 0
+    progress_pct: float = 0
     phase: str = "verbal"
     elapsed_seconds: int = 0
     time_remaining_seconds: int = 0
@@ -1413,6 +1603,12 @@ class LiveMonitoringUpdate(BaseModel):
     camera_frame: str = ""
     mic_active: bool = False
     interviewer_prompt: str = ""
+    current_transcript: str = ""
+    transcript_word_count: int = 0
+    latest_answer_excerpt: str = ""
+    currently_answering: bool = False
+    communication_score: float = 0
+    confidence_score: float = 0
     auto_terminated: bool = False
     termination_reason: str = ""
 
@@ -1805,6 +2001,7 @@ async def save_answer(
     answer_text: str = Form(...),
     candidate_name: str = Form("Candidate")
 ):
+    print(f"[answer-save] interview_id={interview_id} question_id={question_id} answer_chars={len(answer_text or '')}")
     print(f"💾 Saving answer for {question_id}...")
     
     # Get context
@@ -1848,6 +2045,16 @@ async def save_answer(
         "created_at": datetime.now(timezone.utc).isoformat()
     })
 
+    interview_sessions_collection.update_one(
+        {"interview_id": interview_id},
+        {"$set": {"last_activity_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+    print(
+        f"[answer-save] persisted interview_id={interview_id} "
+        f"question_id={question_id} ai_score={ai_result.get('overall_score', 0)}"
+    )
+
     print("✅ Answer saved to DB.")
 
     return {
@@ -1873,6 +2080,10 @@ class BehavioralData(BaseModel):
 def save_behavioral_data(data: BehavioralData):
     """Saves per-question behavioral and proctoring metrics"""
     try:
+        print(
+            f"[behavioral-save] interview_id={data.interview_id} question_id={data.question_id} "
+            f"wpm={data.wpm} tab_switches={data.tab_switches} face_alerts={data.face_alerts}"
+        )
         answers_collection.update_many(
             {"interview_id": data.interview_id, "question_id": data.question_id},
             {"$set": {
@@ -1884,6 +2095,10 @@ def save_behavioral_data(data: BehavioralData):
                 "tab_switches": data.tab_switches,
                 "face_alerts": data.face_alerts
             }}
+        )
+        interview_sessions_collection.update_one(
+            {"interview_id": data.interview_id},
+            {"$set": {"last_activity_at": datetime.now(timezone.utc).isoformat()}},
         )
         return {"status": "ok"}
     except Exception as e:
@@ -2206,6 +2421,9 @@ def get_interview_details(link_id: str):
     candidate_email = session_data.get("candidate_email")
     live_monitoring = session_data.get("live_monitoring") or {}
     violations = session_data.get("violations") or []
+    question_pool: List[Dict[str, Any]] = []
+    coding_snapshot: Dict[str, Any] = {}
+    monitoring_state = "idle"
 
     # Disabled: admin result reads must not mutate candidate session status.
     if False and current_status == 'started' and actual_interview_id:
@@ -2215,8 +2433,12 @@ def get_interview_details(link_id: str):
 
     # Fetch recording path from interviews table
     recording_url = None
+    interview_doc = None
     if actual_interview_id:
         rec_row = interviews_collection.find_one({"id": actual_interview_id})
+        interview_doc = rec_row
+        question_pool = _question_pool_from_interview_doc(interview_doc)
+        coding_snapshot = _build_coding_round_snapshot((interview_doc or {}).get("coding_round") or {})
         if rec_row and rec_row.get("recording_path"):
             # Convert absolute path to a relative URL path
             raw_path = rec_row["recording_path"].replace("\\", "/")
@@ -2229,9 +2451,11 @@ def get_interview_details(link_id: str):
     total_tab_switches = 0
     total_face_alerts = 0
     total_time = 0
+    answer_rows: List[Dict[str, Any]] = []
 
     if actual_interview_id:
-        rows = answers_collection.find({"interview_id": actual_interview_id}).sort("question_id", 1)
+        answer_rows = list(answers_collection.find({"interview_id": actual_interview_id}).sort("question_id", 1))
+        rows = answer_rows
 
         for row in rows:
             tab_sw = row.get("tab_switches") or 0
@@ -2253,7 +2477,8 @@ def get_interview_details(link_id: str):
                 "time_spent_seconds": row.get("time_spent_seconds") or 0,
                 "keyword_match_pct": round(row.get("keyword_match_pct") or 0, 1),
                 "tab_switches": tab_sw,
-                "face_alerts": face_al
+                "face_alerts": face_al,
+                "created_at": row.get("created_at")
             })
 
     # 2. Calculate or restore AI summary
@@ -2290,7 +2515,40 @@ def get_interview_details(link_id: str):
             except Exception as e:
                 print(f"Summary cache error: {e}")
 
-    integrity_report = compute_integrity_report(session_data, list(answers_collection.find({"interview_id": actual_interview_id})) if actual_interview_id else [])
+    integrity_report = compute_integrity_report(session_data, answer_rows if actual_interview_id else [])
+    latest_answer = answer_rows[-1] if answer_rows else None
+    latest_answer_score = latest_answer.get("ai_score") if latest_answer else None
+    live_confidence_score = _derive_live_confidence_score(live_monitoring, latest_answer_score)
+    communication_score = _derive_communication_score(live_monitoring, latest_answer)
+    total_questions = len(question_pool)
+    live_question_index = _safe_int(live_monitoring.get("question_index")) or _safe_int(live_monitoring.get("current_question_id")) or len(answer_rows)
+    if total_questions and live_question_index > total_questions:
+        live_question_index = total_questions
+    progress_pct = _safe_float(live_monitoring.get("progress_pct"))
+    if progress_pct <= 0 and total_questions:
+        progress_pct = round(min(100.0, (max(live_question_index, len(answer_rows)) / total_questions) * 100.0), 1)
+    elif progress_pct <= 0 and answer_rows:
+        progress_pct = round(min(100.0, len(answer_rows) * 5.0), 1)
+    updated_at = live_monitoring.get("updated_at") or session_data.get("last_activity_at") or created_at
+    updated_dt = _parse_iso_datetime(updated_at)
+    if current_status == "completed":
+        monitoring_state = "completed"
+    elif updated_dt:
+        age_seconds = max(0, int((datetime.now(timezone.utc) - updated_dt).total_seconds()))
+        monitoring_state = "live" if age_seconds <= 12 else ("stale" if age_seconds <= 45 else "disconnected")
+    current_transcript = (live_monitoring.get("current_transcript") or "").strip()
+    submitted_answers_snapshot = _build_live_answers_snapshot(answer_rows)
+    current_answer_state = "listening"
+    if live_monitoring.get("currently_answering"):
+        current_answer_state = "answering"
+    elif (live_monitoring.get("phase") or "").lower() == "coding":
+        current_answer_state = "coding"
+    elif latest_answer:
+        current_answer_state = "submitted"
+    print(
+        f"[admin-live] link_id={link_id} status={current_status} answers={len(answer_rows)} "
+        f"violations={len(violations)} monitoring_state={monitoring_state}"
+    )
 
     return {
         "interview_id": link_id,
@@ -2306,10 +2564,46 @@ def get_interview_details(link_id: str):
         "decision": session_data.get("decision"),
         "session_status": current_status,
         "summary_ready": summary_ready,
+        "monitoring_state": monitoring_state,
+        "last_activity_at": session_data.get("last_activity_at"),
         "live_monitoring": live_monitoring,
         "violations": violations,
         "termination_reason": session_data.get("termination_reason", ""),
         "auto_terminated": bool(session_data.get("auto_terminated")),
+        "progress": {
+            "current_question_id": live_monitoring.get("current_question_id"),
+            "question_index": live_question_index,
+            "total_questions": total_questions,
+            "progress_pct": progress_pct,
+            "phase": live_monitoring.get("phase") or "verbal",
+            "currently_answering": bool(live_monitoring.get("currently_answering")),
+            "elapsed_seconds": _safe_int(live_monitoring.get("elapsed_seconds")),
+            "time_remaining_seconds": _safe_int(live_monitoring.get("time_remaining_seconds")),
+        },
+        "live_answer_stream": {
+            "current_transcript": current_transcript,
+            "transcript_word_count": _safe_int(live_monitoring.get("transcript_word_count")),
+            "latest_answer_excerpt": live_monitoring.get("latest_answer_excerpt") or (submitted_answers_snapshot[-1]["answer_excerpt"] if submitted_answers_snapshot else ""),
+            "current_answer_state": current_answer_state,
+            "submitted_answers": submitted_answers_snapshot,
+        },
+        "live_analytics": {
+            "confidence_score": live_confidence_score,
+            "communication_score": communication_score,
+            "speaking": bool(live_monitoring.get("speaking")),
+            "audio_level": round(_safe_float(live_monitoring.get("audio_level")), 3),
+            "silence_seconds": _safe_int(live_monitoring.get("silence_seconds")),
+            "integrity_risk_score": _safe_int(live_monitoring.get("integrity_risk_score")),
+        },
+        "candidate_monitoring": {
+            "camera_frame": live_monitoring.get("camera_frame") or "",
+            "face_status": live_monitoring.get("face_status") or "Unknown",
+            "mic_active": bool(live_monitoring.get("mic_active")),
+            "warnings": live_monitoring.get("warnings") or [],
+            "interviewer_prompt": live_monitoring.get("interviewer_prompt") or "",
+            "updated_at": updated_at,
+        },
+        "coding_snapshot": coding_snapshot,
         "integrity": {
             "total_tab_switches": total_tab_switches,
             "total_face_alerts": total_face_alerts,
@@ -3093,6 +3387,21 @@ def get_dashboard_stats(admin_id: str):
         return {"error": str(e)}
 
 
+@app.get("/admin/live-dashboard-metrics")
+def get_live_dashboard_metrics(admin_id: str):
+    try:
+        sessions = list(interview_sessions_collection.find({"created_by": admin_id}))
+        metrics = _build_live_dashboard_metrics(sessions)
+        print(
+            f"[dashboard-live] admin_id={admin_id} ongoing={metrics['ongoing_count']} "
+            f"alerts={metrics['integrity_alert_count']} speaking={metrics['currently_speaking_count']}"
+        )
+        return metrics
+    except Exception as exc:
+        print(f"[dashboard-live] error admin_id={admin_id}: {exc}")
+        return {"error": str(exc)}
+
+
 # ── Task 2: Export Sessions Data Endpoint ───────────────────────────────────
 @app.get("/admin/export-sessions")
 async def export_sessions(admin_id: str, status_filter: str = ""):
@@ -3847,12 +4156,19 @@ async def update_live_monitoring(interview_id: str, payload: LiveMonitoringUpdat
 
     live_monitoring = payload.dict()
     live_monitoring["updated_at"] = datetime.now(timezone.utc).isoformat()
+    current_status = session.get("status", "started")
+    next_status = "completed" if current_status == "completed" else "started"
+    print(
+        f"[live-update] interview_id={interview_id} status={current_status} phase={live_monitoring.get('phase')} "
+        f"question={live_monitoring.get('current_question_id')} transcript_words={live_monitoring.get('transcript_word_count')} "
+        f"warnings={len(live_monitoring.get('warnings') or [])} frame={'yes' if live_monitoring.get('camera_frame') else 'no'}"
+    )
     interview_sessions_collection.update_one(
         {"interview_id": interview_id},
         {"$set": {
             "live_monitoring": live_monitoring,
             "last_activity_at": live_monitoring["updated_at"],
-            "status": "completed" if payload.auto_terminated and session.get("status") == "completed" else session.get("status", "started")
+            "status": next_status
         }}
     )
     refreshed = interview_sessions_collection.find_one({"interview_id": interview_id}) or session
@@ -3891,10 +4207,12 @@ async def terminate_interview_for_integrity(interview_id: str, payload: Integrit
                 "live_monitoring.auto_terminated": True,
                 "live_monitoring.termination_reason": payload.reason,
                 "live_monitoring.updated_at": datetime.now(timezone.utc).isoformat(),
+                "last_activity_at": datetime.now(timezone.utc).isoformat(),
             },
             "$push": {"violations": event}
         }
     )
+    print(f"[integrity-terminate] interview_id={interview_id} type={payload.type} count={payload.count}")
     return {"status": "success", "termination_reason": payload.reason}
 
 
@@ -3904,7 +4222,10 @@ async def log_violation(interview_id: str, violation: ViolationRequest):
     try:
         interview_sessions_collection.update_one(
             {"interview_id": interview_id},
-            {"$push": {"violations": violation.dict()}}
+            {
+                "$push": {"violations": violation.dict()},
+                "$set": {"last_activity_at": datetime.now(timezone.utc).isoformat()}
+            }
         )
         return {"status": "success"}
     except Exception as e:

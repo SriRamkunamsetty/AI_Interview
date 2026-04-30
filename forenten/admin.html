@@ -2139,6 +2139,33 @@
                             <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem;"><span
                                     id="stat-today">--</span> today</div>
                         </div>
+                        <div onclick="filterByCardStatus('started')"
+                            style="background: linear-gradient(135deg, rgba(15,23,42,0.96), rgba(22,32,56,0.92)); border: 1px solid rgba(52,211,153,0.22); border-radius: var(--radius-md); padding: 1.25rem; position: relative; overflow: hidden; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 18px 45px rgba(16,185,129,0.12), inset 0 1px 0 rgba(255,255,255,0.04); backdrop-filter: blur(16px);"
+                            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 24px 55px rgba(16,185,129,0.18), inset 0 1px 0 rgba(255,255,255,0.07)'" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 18px 45px rgba(16,185,129,0.12), inset 0 1px 0 rgba(255,255,255,0.04)'">
+                            <div
+                                style="position: absolute; inset: 0; background: radial-gradient(circle at top right, rgba(52,211,153,0.18), transparent 38%), linear-gradient(120deg, rgba(6,182,212,0.08), transparent 55%); pointer-events: none;">
+                            </div>
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem; position:relative; z-index:1;">
+                                <div
+                                    style="font-size: 0.75rem; color: #d1fae5; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700;">
+                                    Ongoing Interviews</div>
+                                <div style="display:flex; align-items:center; gap:0.45rem; color:#bbf7d0; font-size:0.72rem; font-weight:700;">
+                                    <span style="width:10px; height:10px; border-radius:999px; background:#22c55e; box-shadow:0 0 0 0 rgba(34,197,94,0.8); animation:pulse 1.5s infinite;"></span>
+                                    LIVE
+                                </div>
+                            </div>
+                            <div id="stat-ongoing"
+                                style="position:relative; z-index:1; font-size: 2rem; font-weight: 800; color: #ecfdf5; margin-top: 0.35rem;">--
+                            </div>
+                            <div style="position:relative; z-index:1; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0.45rem; margin-top:0.7rem; font-size:0.72rem; color:#cbd5e1;">
+                                <div><span id="stat-live-sessions" style="font-weight:700; color:#fff;">--</span> live sessions</div>
+                                <div><span id="stat-live-alerts" style="font-weight:700; color:#fff;">--</span> alerts</div>
+                                <div><span id="stat-live-confidence" style="font-weight:700; color:#fff;">--</span> avg confidence</div>
+                                <div><span id="stat-live-speaking" style="font-weight:700; color:#fff;">--</span> speaking now</div>
+                                <div><span id="stat-live-coding" style="font-weight:700; color:#fff;">--</span> coding rounds</div>
+                                <div><span id="stat-monitoring-ready" style="font-weight:700; color:#fff;">--</span> monitored</div>
+                            </div>
+                        </div>
                         <div onclick="filterByCardStatus('pending')"
                             style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.25rem; position: relative; overflow: hidden; cursor: pointer; transition: transform 0.2s;"
                             onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
@@ -2896,17 +2923,28 @@
 
         function buildLiveMonitoringHtml(data, interviewId) {
             const live = data.live_monitoring || {};
+            const progress = data.progress || {};
+            const liveAnswerStream = data.live_answer_stream || {};
+            const liveAnalytics = data.live_analytics || {};
+            const candidateMonitoring = data.candidate_monitoring || {};
+            const codingSnapshot = data.coding_snapshot || {};
             const report = data.integrity_report || {};
-            const warnings = (live.warnings || []).slice(0, 6);
-            const frame = live.camera_frame || '';
-            const audioPct = Math.max(4, Math.min(100, Math.round((live.audio_level || 0) * 280)));
-            const updatedAt = live.updated_at ? new Date(live.updated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Awaiting candidate stream';
+            const warnings = (candidateMonitoring.warnings || live.warnings || []).slice(0, 8);
+            const frame = candidateMonitoring.camera_frame || live.camera_frame || '';
+            const audioPct = Math.max(4, Math.min(100, Math.round(((liveAnalytics.audio_level || live.audio_level || 0) * 280))));
+            const updatedAtRaw = candidateMonitoring.updated_at || live.updated_at || data.last_activity_at || '';
+            const updatedAt = updatedAtRaw ? new Date(updatedAtRaw).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Awaiting candidate stream';
+            const monitoringState = data.monitoring_state || 'idle';
+            const monitoringColor = monitoringState === 'live' ? 'var(--accent)' : (monitoringState === 'stale' ? 'var(--warning)' : (monitoringState === 'completed' ? 'var(--primary-light)' : 'var(--danger)'));
+            const latestAnswers = liveAnswerStream.submitted_answers || [];
+            const transcriptPreview = liveAnswerStream.current_transcript || liveAnswerStream.latest_answer_excerpt || '';
+            const progressPct = Math.max(0, Math.min(100, Number(progress.progress_pct || 0)));
             const violationTimeline = (data.violations || []).slice(-6).reverse().map(v => `
                 <div style="padding:0.8rem 0;border-bottom:1px solid var(--border);display:flex;gap:0.9rem;align-items:flex-start;">
                     <div style="width:10px;height:10px;border-radius:999px;background:${v.termination_triggered ? 'var(--danger)' : 'var(--warning)'};margin-top:0.35rem;"></div>
                     <div style="flex:1;">
                         <div style="font-weight:700;color:var(--text-primary);text-transform:capitalize;">${(v.type || 'violation').replace(/_/g, ' ')}</div>
-                        <div style="font-size:0.82rem;color:var(--text-muted);margin-top:0.2rem;">${v.detail || 'Integrity anomaly recorded'} ? ${v.timestamp ? new Date(v.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}</div>
+                        <div style="font-size:0.82rem;color:var(--text-muted);margin-top:0.2rem;">${v.detail || 'Integrity anomaly recorded'} ${v.timestamp ? `• ${new Date(v.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}</div>
                         ${v.evidence_path ? `<img src="${API_BASE}/${String(v.evidence_path).replace(/^.*?(uploads\/)/, '$1')}" style="margin-top:0.55rem;width:180px;border-radius:10px;border:1px solid var(--border);" />` : ''}
                     </div>
                 </div>
@@ -2916,12 +2954,13 @@
                 <div style="margin-bottom: 1.5rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
                     <div>
                         <h2 style="color: var(--primary-light); margin-bottom: 0.35rem; font-size: 1.55rem;">${data.candidate_name || 'Candidate'} - Live Monitoring</h2>
-                        <p style="color: var(--text-muted); font-size: 0.9rem;">Session ${interviewId} - status: ${data.session_status || 'started'} - last update ${updatedAt}</p>
+                        <p style="color: var(--text-muted); font-size: 0.9rem;">Session ${interviewId} • status: ${data.session_status || 'started'} • last update ${updatedAt}</p>
                     </div>
                     <div style="padding:0.8rem 1rem;border-radius:12px;border:1px solid var(--border);background:var(--bg-card);min-width:220px;">
                         <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Integrity Health</div>
                         <div style="font-size:1.2rem;font-weight:800;color:${(report.integrity_score || 0) >= 70 ? 'var(--accent)' : 'var(--danger)'};margin-top:0.4rem;">${live.integrity_health_status || report.risk_classification || 'Monitoring'}</div>
                         <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:0.2rem;">Risk Score: ${live.integrity_risk_score ?? report.integrity_score ?? 0}/100</div>
+                        <div style="font-size:0.78rem;color:${monitoringColor};margin-top:0.35rem;font-weight:700;text-transform:uppercase;">${monitoringState}</div>
                     </div>
                 </div>
 
@@ -2929,20 +2968,35 @@
                     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
                             <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-camera"></i> Candidate Camera</strong>
-                            <span style="font-size:0.82rem;color:var(--text-muted);">${live.face_status || 'Waiting for camera feed'}</span>
+                            <span style="font-size:0.82rem;color:var(--text-muted);">${candidateMonitoring.face_status || live.face_status || 'Waiting for camera feed'}</span>
                         </div>
                         ${frame ? `<img src="${frame}" style="width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:12px;border:1px solid var(--border);background:#000;" />` : '<div style="height:260px;border-radius:12px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text-muted);background:rgba(255,255,255,0.02);">Live frame will appear once the candidate grants camera access.</div>'}
                         <div style="margin-top:1rem;display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">
                             <div style="padding:0.9rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
                                 <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;">Current Question</div>
                                 <div style="margin-top:0.35rem;font-weight:700;line-height:1.45;">${live.current_question_text || 'Waiting for interview to start'}</div>
+                                <div style="margin-top:0.45rem;font-size:0.8rem;color:var(--text-muted);">Q${progress.question_index || live.question_index || progress.current_question_id || 0} of ${progress.total_questions || live.total_questions || 0}</div>
                             </div>
                             <div style="padding:0.9rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
                                 <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;">Audio Activity</div>
                                 <div style="margin-top:0.6rem;height:12px;border-radius:999px;background:rgba(255,255,255,0.08);overflow:hidden;">
                                     <div style="height:100%;width:${audioPct}%;background:linear-gradient(90deg,var(--accent),#22d3ee);"></div>
                                 </div>
-                                <div style="margin-top:0.45rem;font-size:0.82rem;color:var(--text-secondary);">${live.speaking ? 'Candidate speaking' : 'Silence / listening'} ? ${(live.audio_level || 0).toFixed ? live.audio_level.toFixed(3) : live.audio_level || 0}</div>
+                                <div style="margin-top:0.45rem;font-size:0.82rem;color:var(--text-secondary);">${liveAnalytics.speaking ? 'Candidate speaking' : 'Silence / listening'} • ${Number(liveAnalytics.audio_level || 0).toFixed(3)}</div>
+                            </div>
+                        </div>
+                        <div style="margin-top:1rem;padding:0.9rem;border-radius:10px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.18);">
+                            <div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+                                <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;">Interview Progress</div>
+                                <div style="font-size:0.82rem;color:var(--text-secondary);">${Math.round(progressPct)}%</div>
+                            </div>
+                            <div style="margin-top:0.55rem;height:10px;border-radius:999px;background:rgba(255,255,255,0.08);overflow:hidden;">
+                                <div style="height:100%;width:${progressPct}%;background:linear-gradient(90deg,#22c55e,#14b8a6,#3b82f6);"></div>
+                            </div>
+                            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0.55rem;margin-top:0.75rem;font-size:0.8rem;color:var(--text-secondary);">
+                                <div><strong style="display:block;color:var(--text-primary);">${progress.phase || live.phase || 'verbal'}</strong> phase</div>
+                                <div><strong style="display:block;color:var(--text-primary);">${progress.elapsed_seconds || live.elapsed_seconds || 0}s</strong> elapsed</div>
+                                <div><strong style="display:block;color:var(--text-primary);">${progress.time_remaining_seconds || live.time_remaining_seconds || 0}s</strong> left</div>
                             </div>
                         </div>
                     </div>
@@ -2950,9 +3004,10 @@
                     <div style="display:flex;flex-direction:column;gap:1rem;">
                         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.8rem;">
                             ${[
-                                ['Phase', live.phase || 'verbal'],
-                                ['Elapsed', `${live.elapsed_seconds || 0}s`],
-                                ['Time Left', `${live.time_remaining_seconds || 0}s`],
+                                ['Phase', progress.phase || live.phase || 'verbal'],
+                                ['State', liveAnswerStream.current_answer_state || 'listening'],
+                                ['Elapsed', `${progress.elapsed_seconds || live.elapsed_seconds || 0}s`],
+                                ['Time Left', `${progress.time_remaining_seconds || live.time_remaining_seconds || 0}s`],
                                 ['Face Alerts', report.face_alerts ?? live.face_alert_count ?? 0],
                                 ['Multiple Faces', report.multiple_faces ?? live.multiple_face_count ?? 0],
                                 ['Invisible Face', report.invisible_face_count ?? live.invisible_face_count ?? 0],
@@ -2964,6 +3019,59 @@
                                 ['Health', live.integrity_health_status || report.risk_classification || 'Monitoring']
                             ].map(([label, value]) => `<div style="padding:0.75rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);"><div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;">${label}</div><div style="margin-top:0.28rem;font-weight:800;font-size:1rem;">${value}</div></div>`).join('')}
                         </div>
+
+                        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-wave-square"></i> Live Analytics</strong>
+                            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0.8rem;margin-top:0.8rem;">
+                                <div style="padding:0.75rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
+                                    <div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;">AI Confidence</div>
+                                    <div style="margin-top:0.28rem;font-weight:800;font-size:1.1rem;">${liveAnalytics.confidence_score ?? 0}/100</div>
+                                </div>
+                                <div style="padding:0.75rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
+                                    <div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;">Communication</div>
+                                    <div style="margin-top:0.28rem;font-weight:800;font-size:1.1rem;">${liveAnalytics.communication_score ?? 0}/100</div>
+                                </div>
+                                <div style="padding:0.75rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
+                                    <div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;">Speech / Silence</div>
+                                    <div style="margin-top:0.28rem;font-weight:800;font-size:1.1rem;">${liveAnalytics.speaking ? 'Speaking' : `${liveAnalytics.silence_seconds || 0}s quiet`}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-microphone-lines"></i> Transcript Stream</strong>
+                            <div style="margin-top:0.75rem;padding:0.9rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);min-height:96px;line-height:1.6;color:${transcriptPreview ? 'var(--text-primary)' : 'var(--text-muted)'};">${transcriptPreview || 'Waiting for transcript updates...'}</div>
+                            <div style="display:flex;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;margin-top:0.65rem;font-size:0.8rem;color:var(--text-muted);">
+                                <span>${liveAnswerStream.transcript_word_count || 0} live words</span>
+                                <span>${liveAnswerStream.current_answer_state || 'listening'}</span>
+                            </div>
+                        </div>
+
+                        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-list-check"></i> Latest Submitted Answers</strong>
+                            <div style="margin-top:0.75rem;display:flex;flex-direction:column;gap:0.7rem;">
+                                ${latestAnswers.length ? latestAnswers.slice().reverse().map(ans => `
+                                    <div style="padding:0.85rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
+                                        <div style="display:flex;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
+                                            <strong style="color:var(--text-primary);">Q${ans.question_id || '--'} • ${ans.question_text || 'Answer submitted'}</strong>
+                                            <span style="color:${(ans.ai_score || 0) >= 60 ? 'var(--accent)' : 'var(--warning)'};font-weight:700;">${ans.ai_score ?? '--'}/100</span>
+                                        </div>
+                                        <div style="margin-top:0.45rem;color:var(--text-muted);font-size:0.88rem;line-height:1.55;">${ans.answer_excerpt || ans.answer_text || 'Answer saved.'}</div>
+                                    </div>
+                                `).join('') : '<span style="color:var(--text-muted);font-size:0.85rem;">No submitted answers yet.</span>'}
+                            </div>
+                        </div>
+
+                        ${codingSnapshot && Object.keys(codingSnapshot).length ? `
+                        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-code"></i> Live Coding Snapshot</strong>
+                            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.8rem;margin-top:0.75rem;">
+                                <div style="padding:0.75rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);"><div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;">Status</div><div style="margin-top:0.28rem;font-weight:800;">${codingSnapshot.status || 'not_started'}</div></div>
+                                <div style="padding:0.75rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);"><div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;">Language</div><div style="margin-top:0.28rem;font-weight:800;">${codingSnapshot.language || '--'}</div></div>
+                            </div>
+                            <div style="margin-top:0.75rem;color:var(--text-primary);font-weight:700;">${codingSnapshot.title || 'Live coding round'}</div>
+                            ${codingSnapshot.latest_explanation ? `<div style="margin-top:0.45rem;color:var(--text-muted);font-size:0.88rem;line-height:1.55;">${codingSnapshot.latest_explanation}</div>` : ''}
+                        </div>` : ''}
 
                         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
                             <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-triangle-exclamation"></i> Active Warnings</strong>
@@ -3219,6 +3327,7 @@
                         document.body.classList.add('dashboard-active'); // Enable full-screen layout
                         loadDashboardSessions();
                         loadDashboardStats(); // Task 8
+                        startDashboardStatsAutoRefresh();
                     }, 300);
 
                 } else {
@@ -3448,7 +3557,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                 <div class="link-display">${fullUrl}</div>
                 <div style="display: flex; gap: 10px; margin-top: 10px;">
                     <button class="btn-copy" onclick="copyLink(this, '${fullUrl}')"><i class="fas fa-copy"></i> Copy Link</button>
-                    <button class="btn-copy" style="background: var(--primary); color: white;" onclick="viewResults('${id}')"><i class="fas fa-eye"></i> Live Results</button>
+                    <button class="btn-copy" style="background: var(--primary); color: white;" onclick="openLiveResults('${id}', '${name.replace(/'/g, "\\'")}')"><i class="fas fa-eye"></i> Live Results</button>
                 </div>
             `;
             list.prepend(item);
@@ -4028,12 +4137,26 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
         }
 
         // Task 8: Load Dashboard Stats
+        let dashboardStatsPoller = null;
+        function startDashboardStatsAutoRefresh() {
+            if (dashboardStatsPoller) return;
+            dashboardStatsPoller = setInterval(() => {
+                if (!document.getElementById('dashboardSection')?.classList.contains('hidden')) {
+                    loadDashboardStats();
+                }
+            }, 5000);
+        }
+
         async function loadDashboardStats() {
             if (!adminId) return;
             try {
-                const res = await fetch(`${API_BASE}/admin/dashboard-stats?admin_id=${adminId}`);
-                if (res.ok) {
-                    const d = await res.json();
+                const [statsRes, liveRes] = await Promise.all([
+                    fetch(`${API_BASE}/admin/dashboard-stats?admin_id=${adminId}`),
+                    fetch(`${API_BASE}/admin/live-dashboard-metrics?admin_id=${adminId}`)
+                ]);
+
+                if (statsRes.ok) {
+                    const d = await statsRes.json();
                     document.getElementById('stat-total').textContent = d.total || 0;
                     document.getElementById('stat-pending').textContent = d.pending || 0;
                     document.getElementById('stat-completed').textContent = d.completed || 0;
@@ -4042,6 +4165,17 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                     document.getElementById('stat-today').textContent = d.today || 0;
                     document.getElementById('stat-started').textContent = d.started || 0;
                     document.getElementById('stat-avgscore').textContent = d.avg_score || 0;
+                }
+
+                if (liveRes.ok) {
+                    const live = await liveRes.json();
+                    document.getElementById('stat-ongoing').textContent = live.ongoing_count ?? 0;
+                    document.getElementById('stat-live-sessions').textContent = live.live_session_count ?? 0;
+                    document.getElementById('stat-live-alerts').textContent = live.integrity_alert_count ?? 0;
+                    document.getElementById('stat-live-confidence').textContent = `${live.avg_live_confidence_score ?? 0}/100`;
+                    document.getElementById('stat-live-speaking').textContent = live.currently_speaking_count ?? 0;
+                    document.getElementById('stat-live-coding').textContent = live.live_coding_sessions_count ?? 0;
+                    document.getElementById('stat-monitoring-ready').textContent = live.monitoring_ready_count ?? 0;
                 }
             } catch (e) { console.error('Stats error:', e); }
         }
@@ -4541,7 +4675,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                 document.getElementById('modalSource').textContent = `${data.source} · ${new Date(data.date).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })}`;
 
                 if (data.session_status !== 'completed') {
-                    container.innerHTML = '<div style="text-align: center; color: var(--warning); padding: 2rem;">Interview is still in progress. Use Live Results for active monitoring. Final summary becomes available after completion.</div>';
+                    container.innerHTML = buildLiveMonitoringHtml(data, interviewId);
                     return;
                 }
                 if (!data.answers || data.answers.length === 0) {
