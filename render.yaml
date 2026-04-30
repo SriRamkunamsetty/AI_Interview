@@ -8,6 +8,8 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
       - key: MONGO_URI
         sync: false
       - key: OPENROUTER_API_KEY

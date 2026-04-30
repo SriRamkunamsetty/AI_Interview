@@ -87,6 +87,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Health check for keeping Render awake
 @app.get("/")
 @app.get("/health")
+@app.head("/")
+@app.head("/health")
 def health_check():
     return {
         "status": "ok",
@@ -3137,6 +3139,10 @@ async def export_sessions(admin_id: str, status_filter: str = ""):
 # Redundant v2 removed as v1 unified above.
 
 def process_pending_invitation_emails():
+    if not init_mongo():
+        print("Skipping pending invitation email processing because MongoDB is unavailable.")
+        return
+
     now = datetime.now(timezone.utc).isoformat()
     due_sessions = list(interview_sessions_collection.find({
         "invite_email_status": {"$in": ["pending", "failed"]},
@@ -3183,6 +3189,7 @@ def invitation_email_scheduler_loop():
 def startup_event():
     global EMAIL_SCHEDULER_STARTED
     print("Startup event triggered.")
+    print(f"Python runtime={sys.version}")
     print(f"FRONTEND_URL={FRONTEND_URL}")
     print(f"OPENROUTER_API_KEY configured={bool(os.getenv('OPENROUTER_API_KEY'))}")
     print("Connecting Mongo...")
