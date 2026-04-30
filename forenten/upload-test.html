@@ -56,7 +56,7 @@
         
         try {
             console.log('Sending request to /upload-resume...');
-            const response = await fetch(`${window.API_BASE_URL || 'http://127.0.0.1:8000'}/upload-resume`, {
+            const response = await fetch(`${window.API_BASE_URL || 'https://ai-adaptive-interview-api.onrender.com'}/upload-resume`, {
                 method: 'POST',
                 body: formData,
                 credentials: 'include',

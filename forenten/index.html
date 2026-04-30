@@ -1784,7 +1784,6 @@
     <script>
         let mediaStream = null;
         //let chunks = []; // Stores the audio/video data
-        //const API_BASE_URL = "http://127.0.0.1:8000"; // Removed duplicate
         const resumeInput = document.getElementById("resumeFile");
         const jdInput = document.getElementById("jobDescription");
 
@@ -2103,9 +2102,7 @@
             baselineArea: null
         };
 
-        // CONFIGURATION: Change this to your Render URL after deployment
-        // e.g. "https://your-app-name.onrender.com"
-        window.API_BASE_URL = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || 'http://127.0.0.1:8000';
+        window.API_BASE_URL = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || 'https://ai-adaptive-interview-api.onrender.com';
         const API_BASE_URL = window.API_BASE_URL; // Keep local name too for convenience
 
         // ─── Mic Status Indicator ────────────────────────────────────────────────

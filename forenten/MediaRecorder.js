@@ -259,8 +259,7 @@ class VideoRecorder {
         formData.append('interview_id', interviewId);
         formData.append('question_id', questionId);
 
-        // Use shared frontend config when present, with a local HTTP fallback.
-        const baseUrl = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || "http://127.0.0.1:8000";
+        const baseUrl = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || "https://ai-adaptive-interview-api.onrender.com";
         const response = await fetch(`${baseUrl}/transcribe`, {
             method: 'POST',
             body: formData
