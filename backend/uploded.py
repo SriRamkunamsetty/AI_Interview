@@ -29,9 +29,20 @@ import time
 import base64
 import html
 import textwrap
+import traceback
+import re
 from difflib import SequenceMatcher
 from pydantic import BaseModel
-from mongo_db import candidates_collection, interviews_collection, answers_collection, admins_collection, interview_sessions_collection
+from mongo_db import (
+    admins_collection,
+    answers_collection,
+    candidates_collection,
+    close_mongo,
+    get_mongo_status,
+    init_mongo,
+    interview_sessions_collection,
+    interviews_collection,
+)
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
@@ -44,6 +55,8 @@ except Exception:
     pass
 
 load_dotenv()
+print("Starting backend...")
+print("Loading environment...")
 
 # Configuration
 UPLOAD_FOLDER = "uploads"
@@ -68,13 +81,18 @@ if FRONTEND_URL and FRONTEND_URL not in ALLOWED_ORIGINS:
     ALLOWED_ORIGINS.append(FRONTEND_URL)
 
 app = FastAPI()
+print("FastAPI app initialized")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Health check for keeping Render awake
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mongo": get_mongo_status(),
+    }
 
 # Mount uploads folder to serve files
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
@@ -2719,8 +2737,7 @@ def send_interview_email(candidate_email: str, candidate_name: str, link_url: st
     import os
     import requests
     from dotenv import load_dotenv
-    # Use absolute path for .env, overriding system variables to prevent stale cache
-    load_dotenv(r"c:\Users\sagar\Downloads\mock-interview\backend\.env", override=True)
+    load_dotenv(override=True)
     brevo_api_key = os.getenv("BREVO_API_KEY")
     sender_name = os.getenv("BREVO_SENDER_NAME", "Arah Info Tech Pvt ltd")
     sender_email = os.getenv("BREVO_SENDER_EMAIL", "oragantisagar041@gmail.com")
@@ -2821,7 +2838,7 @@ def send_interview_email(candidate_email: str, candidate_name: str, link_url: st
     import requests
     from dotenv import load_dotenv
 
-    load_dotenv(r"c:\Users\sagar\Downloads\mock-interview\backend\.env", override=True)
+    load_dotenv(override=True)
     brevo_api_key = os.getenv("BREVO_API_KEY")
     sender_name = os.getenv("BREVO_SENDER_NAME", "Arah Info Tech Pvt ltd")
     sender_email = os.getenv("BREVO_SENDER_EMAIL", "oragantisagar041@gmail.com")
@@ -2915,7 +2932,7 @@ for _route in app.routes:
 
 def send_submission_notification(candidate_email: str, candidate_name: str, admin_email: str, avg_score: float, total_questions: int):
     """Send test submission notification to both admin and candidate."""
-    load_dotenv(r"c:\Users\sagar\Downloads\mock-interview\backend\.env", override=True)
+    load_dotenv(override=True)
     api_key = os.getenv("BREVO_API_KEY")
     sender_name = os.getenv("BREVO_SENDER_NAME", "Arah Info Tech Pvt ltd")
     sender_email_addr = os.getenv("BREVO_SENDER_EMAIL")
@@ -3162,30 +3179,49 @@ def invitation_email_scheduler_loop():
 @app.on_event("startup")
 def startup_event():
     global EMAIL_SCHEDULER_STARTED
+    print("Startup event triggered.")
+    print(f"FRONTEND_URL={FRONTEND_URL}")
+    print(f"OPENROUTER_API_KEY configured={bool(os.getenv('OPENROUTER_API_KEY'))}")
+    print("Connecting Mongo...")
+    mongo_connected = init_mongo()
+    print(f"Mongo connected={mongo_connected}")
+    if not mongo_connected:
+        print(f"Mongo status: {get_mongo_status()}")
+
     # Create default admin if not exists
     try:
-        row = admins_collection.find_one({"username": "admin"})
-        if not row:
-            hashed_pw = hash_password("admin123")
-            default_email = os.getenv("BREVO_SENDER_EMAIL", "oragantisagar041@gmail.com")
-            admins_collection.insert_one({
-                "username": "admin",
-                "password": hashed_pw,
-                "email": default_email,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            })
-            print(f"Default admin created: admin / admin123 (Email: {default_email})")
-        else:
-            # Update email if missing
-            if not row.get("email"):
+        if mongo_connected:
+            row = admins_collection.find_one({"username": "admin"})
+            if not row:
+                hashed_pw = hash_password("admin123")
                 default_email = os.getenv("BREVO_SENDER_EMAIL", "oragantisagar041@gmail.com")
-                admins_collection.update_one({"username": "admin"}, {"$set": {"email": default_email}})
+                admins_collection.insert_one({
+                    "username": "admin",
+                    "password": hashed_pw,
+                    "email": default_email,
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                })
+                print(f"Default admin created: admin / admin123 (Email: {default_email})")
+            else:
+                if not row.get("email"):
+                    default_email = os.getenv("BREVO_SENDER_EMAIL", "oragantisagar041@gmail.com")
+                    admins_collection.update_one({"username": "admin"}, {"$set": {"email": default_email}})
+        else:
+            print("Skipping default admin bootstrap because Mongo is unavailable.")
     except Exception as e:
         print(f"Error checking/creating admin: {e}")
+        traceback.print_exc()
 
     if not EMAIL_SCHEDULER_STARTED:
         threading.Thread(target=invitation_email_scheduler_loop, daemon=True).start()
         EMAIL_SCHEDULER_STARTED = True
+        print("Invitation email scheduler started.")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    print("Shutdown event triggered.")
+    close_mongo()
 
 @app.post("/admin/forgot-password")
 async def forgot_password(data: ForgotPasswordRequest):
@@ -3239,7 +3275,7 @@ async def reset_password(data: ResetPasswordRequest):
     return {"status": "success", "message": "Password updated successfully. You can now login."}
 
 def send_otp_email(email: str, name: str, otp: str):
-    load_dotenv(r"c:\Users\sagar\Downloads\mock-interview\backend\.env", override=True)
+    load_dotenv(override=True)
     api_key = os.getenv("BREVO_API_KEY")
     sender_name = os.getenv("BREVO_SENDER_NAME", "Arah Info Tech Pvt ltd")
     sender_email = os.getenv("BREVO_SENDER_EMAIL")
@@ -3902,7 +3938,7 @@ async def update_decision(data: DecisionRequest):
 
 def send_decision_email(email: str, name: str, decision: str, jd: str):
     import requests
-    load_dotenv(r"c:\Users\sagar\Downloads\mock-interview\backend\.env", override=True)
+    load_dotenv(override=True)
     api_key = os.getenv("BREVO_API_KEY")
     sender_name = os.getenv("BREVO_SENDER_NAME", "Arah Info Tech Pvt ltd")
     sender_email = os.getenv("BREVO_SENDER_EMAIL")
