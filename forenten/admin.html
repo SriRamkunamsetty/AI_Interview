@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Panel — Mock Interview</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><path d='M50 5L10 25v30c0 25 40 40 40 40s40-15 40-40V25L50 5z' fill='%236366f1'/></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -2884,6 +2885,80 @@
         let adminId = null;
         let adminEmail = "";
         let liveResultsPoller = null;
+        let adminSocket = null;
+
+        function initAdminSocket(interviewId) {
+            if (adminSocket) adminSocket.disconnect();
+            adminSocket = io(API_BASE, {
+                reconnection: true,
+                reconnectionAttempts: 10,
+                reconnectionDelay: 1000
+            });
+            adminSocket.on('connect', () => {
+                console.log('Admin connected to WebSocket');
+                adminSocket.emit('join_interview', { interview_id: interviewId });
+            });
+            adminSocket.on('live_update', (data) => {
+                updateLiveUI(data);
+            });
+            adminSocket.on('live_frame', (data) => {
+                renderLiveFrame(data);
+            });
+        }
+
+        let lastFrameTimestamp = 0;
+        function renderLiveFrame(data) {
+            const frameImg = document.querySelector('#liveResultsContent img[alt="Candidate Video"]');
+            if (!frameImg) return;
+
+            // Basic latency tracking
+            const now = Date.now();
+            const latency = now - data.timestamp;
+            
+            // Update debug metrics if they exist
+            const debugEl = document.getElementById('streamDebug');
+            if (debugEl) {
+                debugEl.textContent = `Latency: ${latency}ms | FPS: ${Math.round(1000 / (data.timestamp - lastFrameTimestamp))}`;
+            }
+            lastFrameTimestamp = data.timestamp;
+
+            // Use URL.createObjectURL for binary blobs
+            const blob = new Blob([data.frame], { type: 'image/jpeg' });
+            const url = URL.createObjectURL(blob);
+            
+            // Efficiently update image source
+            const oldUrl = frameImg.src;
+            frameImg.src = url;
+            
+            // Clean up old URL to prevent memory leaks
+            if (oldUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(oldUrl);
+            }
+        }
+
+        function updateLiveUI(data) {
+            // Update specific elements in the live results view
+            const transcriptBox = document.querySelector('#liveResultsContent [style*="min-height:96px"]');
+            if (transcriptBox && data.current_transcript) {
+                transcriptBox.textContent = data.current_transcript;
+                transcriptBox.style.color = 'var(--text-primary)';
+            }
+
+            const phaseEl = document.querySelector('#liveResultsContent [style*="display:block;color:var(--text-primary)"]');
+            if (phaseEl) phaseEl.textContent = data.phase;
+
+            const progressEl = document.querySelector('#liveResultsContent [style*="font-size:0.8rem;color:var(--text-muted)"]');
+            if (progressEl) progressEl.textContent = `Q${data.question_index} of ${data.total_questions}`;
+
+            const faceStatusEl = document.querySelector('#liveResultsContent [style*="font-size:0.82rem;color:var(--text-muted)"]');
+            if (faceStatusEl) faceStatusEl.textContent = data.face_status;
+
+            const audioBar = document.querySelector('#liveResultsContent [style*="height:7px;background:var(--accent)"]');
+            if (audioBar) {
+                const audioPct = Math.max(4, Math.min(100, Math.round(data.audio_level * 280)));
+                audioBar.style.width = `${audioPct}%`;
+            }
+        }
         window._parsedResumeName = "";
         window._emailPreviewContext = null;
         window._lastGeneratedInterviewLink = "";
@@ -4406,9 +4481,11 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
             setTimeout(() => {
                 currentViewId = linkId;
                 refreshLiveResults(linkId);
+                initAdminSocket(linkId);
+                // Keep polling as a fallback but increase interval
                 liveResultsPoller = setInterval(() => {
                     if (currentViewId === linkId) refreshLiveResults(linkId);
-                }, 3000);
+                }, 15000);
             }, 100);
         }
 

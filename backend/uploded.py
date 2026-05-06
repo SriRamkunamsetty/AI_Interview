@@ -62,8 +62,19 @@ print("Loading environment...")
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Cloudinary Configuration
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True
+)
+
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
+import socketio
+import cloudinary
+import cloudinary.uploader
 
 CANONICAL_FRONTEND_URL = "https://ai-adaptive-interview-liart.vercel.app"
 FRONTEND_URL = os.getenv("FRONTEND_URL", CANONICAL_FRONTEND_URL).rstrip("/")
@@ -82,6 +93,42 @@ if FRONTEND_URL and FRONTEND_URL not in ALLOWED_ORIGINS:
 
 app = FastAPI()
 print("FastAPI app initialized")
+
+# Socket.IO setup
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+socket_app = socketio.ASGIApp(sio, app)
+
+@sio.event
+async def connect(sid, environ):
+    print(f"Client connected: {sid}")
+
+@sio.event
+async def disconnect(sid):
+    print(f"Client disconnected: {sid}")
+
+@sio.on("join_interview")
+async def join_interview(sid, data):
+    interview_id = data.get("interview_id")
+    if interview_id:
+        await sio.enter_room(sid, interview_id)
+        print(f"Client {sid} joined room: {interview_id}")
+
+@sio.on("candidate_update")
+async def candidate_update(sid, data):
+    interview_id = data.get("interview_id")
+    if interview_id:
+        # Broadcast metadata to everyone in the room (admin)
+        await sio.emit("live_update", data, room=interview_id, skip_sid=sid)
+
+@sio.on("video_frame")
+async def video_frame(sid, data):
+    # data is expected to be a dict with 'interview_id' and 'frame' (binary)
+    interview_id = data.get("interview_id")
+    frame = data.get("frame")
+    if interview_id and frame:
+        # Directly relay binary frame to admins in the room
+        await sio.emit("live_frame", {"frame": frame, "timestamp": data.get("timestamp")}, room=interview_id, skip_sid=sid)
+
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Health check for keeping Render awake
@@ -2662,28 +2709,34 @@ async def upload_full_recording(
     file: UploadFile = File(...)
 ):
     try:
-        # Create directory for recordings if it doesn't exist
-        recordings_dir = os.path.join(UPLOAD_FOLDER, "recordings")
-        os.makedirs(recordings_dir, exist_ok=True)
+        print(f"Uploading recording for interview {interview_id} to Cloudinary...")
         
-        # Generate filename
-        filename = f"{interview_id}_full_recording.webm"
-        file_path = os.path.join(recordings_dir, filename)
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        # Update database
-        normalized_path = file_path.replace("\\", "/")
-        interviews_collection.update_one(
-            {"id": interview_id},
-            {"$set": {"recording_path": normalized_path}}
+        # Upload to Cloudinary
+        # We use resource_type="video" for webm files
+        upload_result = cloudinary.uploader.upload(
+            file.file,
+            resource_type="video",
+            public_id=f"interviews/{interview_id}_full",
+            overwrite=True
         )
         
-        return {"status": "success", "file_path": normalized_path}
+        video_url = upload_result.get("secure_url")
+        print(f"Cloudinary upload successful: {video_url}")
+        
+        # Update database with the persistent URL
+        interviews_collection.update_one(
+            {"id": interview_id},
+            {"$set": {
+                "recording_path": video_url,
+                "recording_url": video_url,
+                "storage_type": "cloudinary"
+            }}
+        )
+        
+        return {"status": "success", "file_path": video_url}
     except Exception as e:
-        print(f"Error saving full recording: {e}")
+        print(f"Error uploading to Cloudinary: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

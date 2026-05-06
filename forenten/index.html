@@ -10,6 +10,7 @@
         style-src 'self' 'unsafe-inline'; 
         img-src 'self' data: content:;">
     <title>Interview Recorder</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         :root {
             --primary-color: #4f46e5;
@@ -2069,6 +2070,87 @@
         let backgroundNoiseCooldownUntil = 0;
         let interviewActive = false;
         let tabViolationCount = 0;
+        let socket = null;
+
+        function initSocket() {
+            if (!currentInterviewId) return;
+            socket = io(API_BASE_URL, {
+                reconnection: true,
+                reconnectionAttempts: 10,
+                reconnectionDelay: 1000
+            });
+            socket.on('connect', () => {
+                console.log('Connected to WebSocket server');
+                socket.emit('join_interview', { interview_id: currentInterviewId });
+                if (interviewActive) startStreaming();
+            });
+        }
+
+        let streamCanvas = document.createElement('canvas');
+        let streamCtx = streamCanvas.getContext('2d');
+        let lastFrameTime = 0;
+        const FRAME_INTERVAL = 120; // ~8 FPS for smooth but efficient streaming
+
+        function startStreaming() {
+            if (!interviewActive) return;
+            requestAnimationFrame(streamLoop);
+        }
+
+        function streamLoop(timestamp) {
+            if (!interviewActive) return;
+            if (timestamp - lastFrameTime > FRAME_INTERVAL) {
+                sendVideoFrame();
+                lastFrameTime = timestamp;
+            }
+            requestAnimationFrame(streamLoop);
+        }
+
+        function sendVideoFrame() {
+            const video = document.getElementById('candidateVideo');
+            if (!video || video.paused || video.ended || !socket || !socket.connected) return;
+
+            // Set canvas size to match video aspect ratio but smaller for performance
+            if (streamCanvas.width !== 320) {
+                streamCanvas.width = 320;
+                streamCanvas.height = video.videoHeight / (video.videoWidth / 320);
+            }
+
+            streamCtx.drawImage(video, 0, 0, streamCanvas.width, streamCanvas.height);
+            
+            // Adaptive quality based on simple logic (can be expanded)
+            const quality = 0.4; 
+            
+            streamCanvas.toBlob((blob) => {
+                if (blob && socket && socket.connected) {
+                    socket.emit('video_frame', {
+                        interview_id: currentInterviewId,
+                        frame: blob,
+                        timestamp: Date.now()
+                    });
+                }
+            }, 'image/jpeg', quality);
+        }
+
+        function emitCandidateUpdate(extraData = {}) {
+            if (!socket || !interviewActive) return;
+            const updateData = {
+                interview_id: currentInterviewId,
+                timestamp: new Date().toISOString(),
+                phase: currentPhase || 'verbal',
+                question_index: currentQuestionId || 0,
+                total_questions: (questions && questions.length) || 0,
+                current_transcript: document.getElementById('transcriptionBox')?.value || '',
+                face_status: currentFaceStatus || 'Stable',
+                audio_level: latestAudioLevel || 0,
+                ...extraData
+            };
+            socket.emit('candidate_update', updateData);
+        }
+
+        // Periodically emit metadata updates
+        setInterval(() => {
+            if (interviewActive) emitCandidateUpdate();
+        }, 2000);
         let liveMonitoringInterval = null;
         let objectDetectionInterval = null;
         let objectModel = null;
@@ -2663,6 +2745,8 @@
             // Enforce Fullscreen
             enableFullscreen();
             interviewActive = true;
+            initSocket();
+            startStreaming();
 
             // Reset recording controls
             document.getElementById('startButton').disabled = false;
