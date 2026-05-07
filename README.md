@@ -44,6 +44,16 @@ The platform is built with a modern, decoupled architecture designed for low lat
 *   **Solution**: Replaced `setInterval` with `requestAnimationFrame` and implemented a 120ms throttle (~8 FPS).
 *   **Why**: `requestAnimationFrame` aligns with the browser's refresh rate and pauses when the tab is inactive, saving resources while maintaining a smooth visual experience for the admin.
 
+### 4. Distributed State Persistence (Critical Fix)
+*   **Issue**: The backend used an in-memory dictionary (`interviews = {}`) to track session state. This caused "Interview not found" errors when the server restarted or when multiple worker instances were used (common on Render/Vercel).
+*   **Solution**: Migrated all session state to **MongoDB Atlas**.
+*   **Why**: By using a centralized database for state, the application becomes stateless and horizontally scalable. Sessions persist across server restarts, and any worker instance can handle any request, ensuring 100% session reliability.
+
+### 5. Deployment & Initialization Safety
+*   **Issue**: The backend would crash on startup if Cloudinary was not properly imported or if environment variables were missing.
+*   **Solution**: Fixed import ordering and added safe initialization guards.
+*   **Why**: Ensures the backend starts gracefully even if external services are temporarily misconfigured, providing clear warning logs instead of a total system failure.
+
 ## ⚙️ Setup & Deployment
 
 ### Environment Variables

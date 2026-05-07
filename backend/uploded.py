@@ -16,6 +16,9 @@ import uuid
 import random
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+import cloudinary
+import cloudinary.uploader
+import socketio
 import PyPDF2
 from docx import Document
 import io
@@ -63,18 +66,27 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Cloudinary Configuration
-cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
-    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-    secure=True
-)
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+if not all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
+    print("⚠️ WARNING: Cloudinary environment variables are missing. Video uploads will fail.")
+else:
+    try:
+        cloudinary.config(
+            cloud_name=CLOUDINARY_CLOUD_NAME,
+            api_key=CLOUDINARY_API_KEY,
+            api_secret=CLOUDINARY_API_SECRET,
+            secure=True
+        )
+        print("✅ Cloudinary configured successfully.")
+    except Exception as e:
+        print(f"❌ ERROR: Failed to configure Cloudinary: {e}")
 
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
-import socketio
-import cloudinary
-import cloudinary.uploader
+
 
 CANONICAL_FRONTEND_URL = "https://ai-adaptive-interview-liart.vercel.app"
 FRONTEND_URL = os.getenv("FRONTEND_URL", CANONICAL_FRONTEND_URL).rstrip("/")
@@ -157,8 +169,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory storage (replace with database in production)
-interviews = {}
+# In-memory storage removed in favor of MongoDB persistence
+# interviews = {}
 
 def get_client():
     load_dotenv()
@@ -195,34 +207,35 @@ def get_or_create_candidate(name: str) -> str:
     return str(result.inserted_id)
 
 
-def load_interview_from_db(interview_id: str) -> Optional[Dict[str, Any]]:
+def get_interview_or_404(interview_id: str) -> Dict[str, Any]:
+    """Fetch interview from MongoDB. Replaces in-memory lookup."""
     row = interviews_collection.find_one({"id": interview_id})
     if not row:
-        return None
+        raise HTTPException(status_code=404, detail="Interview not found")
 
     try:
-        loaded_questions = json.loads(row.get("questions", "[]"))
+        questions_raw = row.get("questions", "[]")
+        loaded_questions = json.loads(questions_raw) if isinstance(questions_raw, str) else questions_raw
     except Exception:
         loaded_questions = []
 
-    interview = {
+    return {
         "id": interview_id,
         "source": row.get("source"),
         "profile_text": row.get("profile_text", ""),
         "questions": loaded_questions,
-        "answers": {},
+        "answers": {},  # Answers are stored in answers_collection
         "created_at": row.get("created_at"),
         "coding_round": row.get("coding_round"),
     }
-    interviews[interview_id] = interview
-    return interview
 
+def update_interview_state(interview_id: str, update_data: Dict[str, Any]):
+    """Update interview state in MongoDB."""
+    interviews_collection.update_one({"id": interview_id}, {"$set": update_data})
 
-def get_interview_or_404(interview_id: str) -> Dict[str, Any]:
-    interview = interviews.get(interview_id) or load_interview_from_db(interview_id)
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
-    return interview
+def validate_interview_session(interview_id: str):
+    """Ensure interview exists and is valid."""
+    return get_interview_or_404(interview_id)
 
 
 def get_answer_history(interview_id: str) -> List[Dict[str, Any]]:
@@ -574,8 +587,7 @@ def _build_live_dashboard_metrics(sessions: List[Dict[str, Any]]) -> Dict[str, A
 
 
 def persist_coding_round(interview_id: str, coding_round: Dict[str, Any]) -> None:
-    if interview_id in interviews:
-        interviews[interview_id]["coding_round"] = coding_round
+    """Persist coding round state to MongoDB."""
     interviews_collection.update_one(
         {"id": interview_id},
         {"$set": {"coding_round": coding_round}},
@@ -1736,10 +1748,7 @@ def generate_followup_question(answer_text: str, resume_context: str, jd_text: s
 
 @app.post("/generate-next-question")
 def api_gen_next_question(req: NextQuestionRequest):
-    if req.interview_id not in interviews:
-        raise HTTPException(status_code=404, detail="Interview not found")
-        
-    interview = interviews[req.interview_id]
+    interview = get_interview_or_404(req.interview_id)
     followup_streak = interview.get("followup_streak", 0)
     
     try:
@@ -1819,30 +1828,18 @@ async def upload_resume(
         questions = generate_mock_questions(content_str, source)
 
         if not questions:
-            raise HTTPException(status_code=400, detail="Failed to generate questions")
-
-        # Store interview data (RAM)
-        interviews[interview_id] = {
-            "id": interview_id,
-            "source": source,
-            "profile_text": content_str[:5000], # Store more text
-            "profile_analysis": profile_analysis,
-            "questions": questions,
-            "answers": {},
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-
-        # Store interview data (DB)
+            raise HTTPException(status_code=400, detail="Failed to generate questions")        # Store interview data (DB)
         try:
             interviews_collection.insert_one({
                 "id": interview_id,
                 "source": source,
                 "profile_text": content_str[:5000],
+                "profile_analysis": profile_analysis,
                 "questions": json.dumps(questions),
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
-        except Exception as db_e:
-            print(f"⚠️ DB Save Error: {db_e}")
+        except Exception as e:
+            print(f"DB Error: {e}") Error: {db_e}")
 
 
         return {
@@ -1877,30 +1874,18 @@ async def start_interview(
         if not questions:
             raise HTTPException(status_code=400, detail="Failed to generate questions")
 
-        # ✅ STEP-3.3 → STORE ANALYSIS HERE (RAM)
-        interviews[interview_id] = {
-            "id": interview_id,
-            "source": source,
-            "profile_text": content[:5000],
-            "profile_analysis": profile_analysis,
-            "questions": questions,
-            "answers": {},
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-
-        # Store interview data (DB)
+        # ✅ STE        # Store interview data (DB)
         try:
             interviews_collection.insert_one({
                 "id": interview_id,
                 "source": source,
                 "profile_text": content[:5000],
+                "profile_analysis": profile_analysis,
                 "questions": json.dumps(questions),
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
         except Exception as db_e:
-            print(f"⚠️ DB Save Error: {db_e}")
-
-        return {
+            print(f"⚠️ DB Save Error: {db_e}")       return {
             "interview_id": interview_id,
             "total_questions": len(questions),
             "first_question": questions[0]
@@ -1911,32 +1896,9 @@ async def start_interview(
 
 @app.get("/interview/{interview_id}/question/{question_id}")
 async def get_question(interview_id: str, question_id: int):
-    # Restore from DB if not in RAM
-    if interview_id not in interviews:
-        row = interviews_collection.find_one({"id": interview_id})
-        full_interview = load_interview_from_db(interview_id)
-        if full_interview:
-            print(f"Restored interview {interview_id} from DB.")
-            row = None
-        if row:
-            print(f"🔄 Restoring interview {interview_id} from DB...")
-            try:
-                loaded_questions = json.loads(row.get("questions", "[]"))
-                interviews[interview_id] = {
-                    "id": interview_id,
-                    "source": row.get("source"),
-                    "profile_text": row.get("profile_text"),
-                    "questions": loaded_questions,
-                    "answers": {},
-                    "created_at": row.get("created_at")
-                }
-            except Exception as e:
-                print(f"Restore failed: {e}")
+    """Fetch specific question from MongoDB."""
+    interview = get_interview_or_404(interview_id)
     
-    if interview_id not in interviews:
-        raise HTTPException(status_code=404, detail="Interview not found")
-    
-    interview = interviews[interview_id]
     # Ensure ID comparison works (cast both to int)
     question = next((q for q in interview["questions"] if int(q["id"]) == int(question_id)), None)
     
@@ -1944,7 +1906,7 @@ async def get_question(interview_id: str, question_id: int):
         raise HTTPException(status_code=404, detail="Question not found")
         
     return {
-        "current_question": question,  # This key must match what your HTML looks for
+        "current_question": question,
         "total_questions": len(interview["questions"]),
         "interview_id": interview_id
     }
@@ -1958,8 +1920,7 @@ async def upload_answer(
     question_id: int = Form(...),
     video: UploadFile = File(...)
 ):
-    if interview_id not in interviews:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = get_interview_or_404(interview_id)
 
     with tempfile.TemporaryDirectory() as tmp:
         video_path = os.path.join(tmp, "input.webm")
@@ -1981,18 +1942,19 @@ async def upload_answer(
 @app.get("/interview/{interview_id}/summary")
 async def get_interview_summary(interview_id: str):
     """Get a summary of the interview including all questions and answers."""
-    if interview_id not in interviews:
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = get_interview_or_404(interview_id)
     
-    interview = interviews[interview_id]
+    # Fetch answers from DB
+    answers = get_answer_history(interview_id)
+    
     return {
         "interview_id": interview_id,
         "source": interview["source"],
         "created_at": interview["created_at"],
         "total_questions": len(interview["questions"]),
-        "questions_answered": len(interview["answers"]),
+        "questions_answered": len(answers),
         "questions": interview["questions"],
-        "answers": interview["answers"]
+        "answers": {str(a["question_id"]): a for a in answers}
     }
 @app.get("/")
 def root():
@@ -2051,21 +2013,13 @@ async def save_answer(
     print(f"[answer-save] interview_id={interview_id} question_id={question_id} answer_chars={len(answer_text or '')}")
     print(f"💾 Saving answer for {question_id}...")
     
-    # Get context
+    # Get context from MongoDB
     context = ""
-    # Try RAM first
-    if interview_id in interviews:
-         profile_text = interviews[interview_id].get("profile_text", "")
-         source = interviews[interview_id].get("source", "Resume")
-         context = f"Candidate's {source}: {profile_text}"
-    else:
-        # Try DB
-        try:
-            row = interviews_collection.find_one({"id": interview_id})
-            if row:
-                context = f"Candidate's {row.get('source')}: {row.get('profile_text')}"
-        except Exception as e:
-            print(f"⚠️ Context fetch error: {e}")
+    try:
+        interview = get_interview_or_404(interview_id)
+        context = f"Candidate's {interview.get('source')}: {interview.get('profile_text')}"
+    except Exception as e:
+        print(f"⚠️ Context fetch error: {e}")
 
     # Use the robust analyze_answer function
     ai_result = analyze_answer(question_text, answer_text, context)
@@ -2673,12 +2627,14 @@ class DecisionRequest(BaseModel):
 
 @app.post("/analyze-answer")
 def analyze(req: AnalyzeRequest):
+    """Analyze answer using context from MongoDB."""
     context = ""
-    # Retrieve Resume/JD context from the CURRENT in-memory session (not historical DB data)
-    if req.interview_id and req.interview_id in interviews:
-         profile_text = interviews[req.interview_id].get("profile_text", "")
-         source = interviews[req.interview_id].get("source", "Resume")
-         context = f"Candidate's {source}: {profile_text}"
+    if req.interview_id:
+        try:
+            interview = get_interview_or_404(req.interview_id)
+            context = f"Candidate's {interview.get('source')}: {interview.get('profile_text')}"
+        except Exception as e:
+            print(f"⚠️ Context fetch error: {e}")
     
     result = analyze_answer(req.question, req.answer, context)
 
@@ -4008,8 +3964,6 @@ async def delete_session(link_id: str):
     if interview_id:
         interviews_collection.delete_one({"id": interview_id})
         answers_collection.delete_many({"interview_id": interview_id})
-        if interview_id in interviews:
-            del interviews[interview_id]
             
     # Delete the session link
     interview_sessions_collection.delete_one({"link_id": link_id})
@@ -4102,23 +4056,10 @@ async def start_session_interview(link_id: str = Form(...)):
             }
         
         # Status is 'started' — reload the existing interview and return first question
-        existing = interviews.get(existing_interview_id)
-        if not existing:
-            row2 = interviews_collection.find_one({"id": existing_interview_id})
-            if row2:
-                try:
-                    loaded_questions = json.loads(row2.get("questions", "[]"))
-                    existing = {
-                        "id": existing_interview_id,
-                        "source": row2.get("source"),
-                        "profile_text": row2.get("profile_text", ""),
-                        "questions": loaded_questions,
-                        "answers": {},
-                        "created_at": row2.get("created_at")
-                    }
-                    interviews[existing_interview_id] = existing
-                except Exception:
-                    existing = None
+        try:
+            existing = get_interview_or_404(existing_interview_id)
+        except Exception:
+            existing = None
         
         if existing and existing.get("questions"):
             questions = existing["questions"]
@@ -4159,28 +4100,17 @@ async def start_session_interview(link_id: str = Form(...)):
 
     interview_id = f"int_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4().hex[:8]}"
 
-    # Store interview data (RAM)
-    interviews[interview_id] = {
-        "id": interview_id,
-        "source": source,
-        "profile_text": content_str[:5000],
-        "profile_analysis": profile_analysis,
-        "questions": questions,
-        "answers": {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "candidate_name": candidate_name,
-        "candidate_email": candidate_email,
-        "status": status
-    }
-    
     # Store interview data (DB)
     try:
         interviews_collection.insert_one({
             "id": interview_id,
             "source": source,
             "profile_text": content_str[:5000],
+            "profile_analysis": profile_analysis,
             "questions": json.dumps(questions),
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "candidate_name": candidate_name,
+            "candidate_email": candidate_email
         })
         
         # Update session status

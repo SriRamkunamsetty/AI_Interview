@@ -13,3 +13,5 @@ pymongo[srv]
 certifi
 langgraph
 mongomock
+cloudinary
+python-socketio

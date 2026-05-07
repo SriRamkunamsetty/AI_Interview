@@ -1,66 +1,114 @@
-# AI Interview Platform: Codebase Analysis and Bug Diagnosis
+# AI Interview Platform: Comprehensive Architecture & Analysis Report
 
-This document provides a comprehensive analysis of the AI Interview platform codebase, focusing on system architecture, workflow, and the root causes of two critical bugs: live preview inconsistency and the failure of videos to save in MongoDB Atlas.
+## 1. System Overview
 
-## 1. System Architecture Overview
+The AI Interview Platform is a full-stack, real-time application designed to conduct, monitor, and evaluate automated interviews. It features a decoupled architecture where a static frontend communicates with a Python-based backend via REST APIs and WebSockets. The system supports live video streaming, real-time proctoring (integrity monitoring), AI-driven question generation, automated answer evaluation, and coding rounds.
 
-The platform is a full-stack application with a Python-based backend and an HTML/JavaScript frontend.
+The platform has recently undergone significant architectural upgrades to improve performance and reliability, notably migrating from HTTP polling to WebSockets for live streaming and from local file storage to Cloudinary for persistent video storage.
 
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| **Frontend** | HTML, CSS, JavaScript | Consists of two main interfaces: `index.html` for the candidate interview and `admin.html` for the admin dashboard. It uses `MediaRecorder` for video/audio capture and `fetch` for API communication. |
-| **Backend** | FastAPI (Python) | A REST API server (`uploded.py`) that handles business logic, data processing, and communication with the database. |
-| **Database** | MongoDB Atlas | Used to store all persistent data, including interview sessions, candidate information, answers, and analysis results. |
-| **Deployment**| Vercel (Frontend), Render (Backend) | The frontend is deployed on Vercel, and the backend is deployed on Render. |
+## 2. Full System Architecture Analysis
 
-## 2. End-to-End Workflow
+### 2.1 Frontend Architecture
+The frontend is built as a Single Page Application (SPA) using vanilla HTML5, CSS3, and JavaScript (ES6+), served statically via Vercel.
+*   **Candidate Interface (`forenten/index.html`)**: Manages the interview lifecycle, captures media via `MediaRecorder.js`, handles browser-based speech recognition, and streams live video frames and metadata via Socket.IO.
+*   **Admin Dashboard (`forenten/admin.html`)**: Provides authentication, session management, and a real-time monitoring dashboard that consumes WebSocket events to display live candidate feeds and integrity alerts.
+*   **Configuration (`forenten/config.js`)**: Manages environment-specific API base URLs.
 
-1.  **Initiation**: A candidate starts an interview via a unique session link.
-2.  **Capture**: The frontend (`index.html`) captures video and audio using the browser's `MediaRecorder` API.
-3.  **Real-time Data Submission**: During the interview, the frontend sends a continuous stream of data to the backend:
-    *   Transcriptions are generated via the Web Speech API and sent to the `/transcribe` endpoint.
-    *   Behavioral data (e.g., tab switches, face detection alerts) is sent to the `/save-behavioral-data` endpoint.
-    *   Each answer is submitted to the `/save-answer` endpoint for analysis.
-4.  **Admin Monitoring**: The admin dashboard (`admin.html`) periodically polls the `/admin/interview/{link_id}` endpoint to fetch and display the latest interview data.
-5.  **Completion & Upload**: When the interview ends, the frontend stops the recording, packages the full video into a `.webm` blob, and uploads it to the `/upload-full-recording` endpoint.
-6.  **Storage**: The backend receives the video file, saves it to a local directory on the server, and stores the file path in the corresponding MongoDB document.
+### 2.2 Backend Architecture
+The backend is a monolithic FastAPI application deployed on Render.
+*   **Core Application (`backend/uploded.py`)**: The primary entry point containing REST endpoints, WebSocket event handlers, and business logic for session management, AI evaluation, and report generation.
+*   **WebSocket Server**: Integrated using `python-socketio` (ASGI mode) alongside FastAPI to handle low-latency bidirectional communication.
+*   **AI Pipeline**: Utilizes OpenRouter (specifically `openai/gpt-4o-mini`) for generating questions, evaluating answers, and summarizing interviews.
+*   **Coding Round Engine (`backend/coding_graph.py`)**: Manages technical coding tasks, code execution, and AI-driven feedback.
 
-## 3. Root Cause Analysis
+### 2.3 Database Structure
+Persistence is handled by MongoDB Atlas, accessed via `pymongo`.
+*   **Connection Management (`backend/mongo_db.py`)**: Implements connection pooling, retry logic, and lazy collection proxies.
+*   **Collections**:
+    *   `candidates`: Stores candidate profiles.
+    *   `admins`: Stores admin credentials and profiles.
+    *   `interview_sessions`: Tracks the lifecycle of an interview link (pending, started, completed).
+    *   `interviews`: Stores the actual interview data, including generated questions and the final recording URL.
+    *   `answers`: Stores individual question responses, AI scores, and feedback.
 
-### Bug 1: Live Preview Inconsistency
+### 2.4 External Integrations
+*   **MongoDB Atlas**: Primary database for metadata and analytics.
+*   **Cloudinary**: Cloud storage for full interview video recordings (`.webm`).
+*   **OpenRouter (OpenAI)**: LLM provider for question generation, answer scoring, and coding feedback.
+*   **Brevo (Sendinblue)**: SMTP service for sending interview invitations and completion notifications.
 
-**Root Cause**: The live monitoring feature is implemented using **HTTP polling**, not a real-time communication protocol like WebSockets. The `admin.html` page uses a `setInterval` function to repeatedly call the `/admin/interview/{link_id}` endpoint. This architectural choice is the primary source of the observed inconsistency and delays.
+## 3. File-by-File Understanding
 
-*   **Polling Latency**: There is an inherent delay between the time an event occurs on the candidate's side and when it is reflected on the admin's dashboard. This delay is a sum of the polling interval, network latency, and backend processing time.
-*   **Data Staleness**: The data displayed on the admin dashboard is only as fresh as the last poll. Any actions that happen between polls will not be visible until the next refresh, creating a perception of instability.
-*   **Lack of Real-time Push**: The server does not proactively push updates to the admin client. The client must constantly pull data, which is inefficient and not truly "live."
+| File Path | Responsibility |
+| :--- | :--- |
+| `backend/uploded.py` | Main FastAPI application, Socket.IO server, REST endpoints, and core business logic. |
+| `backend/mongo_db.py` | MongoDB connection manager, URI validation, and lazy collection proxies. |
+| `backend/coding_graph.py` | AI logic for generating coding tasks and evaluating code submissions. |
+| `backend/analyze_answer.py` | Helper functions for evaluating verbal answers using OpenRouter. |
+| `backend/transcription.py` | Alternative/legacy transcription endpoint using local Whisper models. |
+| `backend/database.py` | Legacy SQLite schema bootstrap (indicates architectural drift). |
+| `forenten/index.html` | Candidate-facing UI, media capture, WebSocket emission, and interview flow. |
+| `forenten/admin.html` | Admin-facing UI, session management, and real-time WebSocket reception. |
+| `forenten/MediaRecorder.js` | Frontend class managing audio capture and browser-based speech recognition. |
+| `forenten/config.js` | Frontend configuration for API base URLs. |
 
-### Bug 2: Video Not Saving in MongoDB Atlas
+## 4. Workflow Explanation
 
-**Root Cause**: The video file itself is **not being stored in MongoDB Atlas**. The backend's `/upload-full-recording` endpoint saves the video to the **local filesystem** of the server running on Render. It then stores only the **file path** string in the `recording_path` field of the interview document in MongoDB.
+### 4.1 Candidate Interview Lifecycle
+1.  **Initialization**: Candidate opens the unique session link. The frontend fetches session details and initializes the camera/microphone.
+2.  **Connection**: A Socket.IO connection is established, joining a room specific to the `interview_id`.
+3.  **Execution**: The candidate answers questions sequentially. `MediaRecorder.js` captures audio and provides live transcripts.
+4.  **Streaming**: Video frames (binary JPEGs) and metadata (transcripts, proctoring alerts) are streamed via WebSockets to the admin.
+5.  **Submission**: After each answer, audio is uploaded to `/transcribe` for final processing, and the answer is saved.
+6.  **Completion**: The full session recording is finalized and uploaded to Cloudinary via `/upload-full-recording`.
 
-*   **Ephemeral Filesystems**: Cloud platforms like Render use ephemeral filesystems. This means that any files written to the local disk are temporary and are **deleted** when the server instance restarts, redeploys, or goes to sleep. This is the core reason the videos appear to be missing.
-*   **Invalid File Path**: The path stored in MongoDB (e.g., `uploads/recordings/interview-id.webm`) becomes a dead link as soon as the file is wiped from the ephemeral storage, making it impossible to retrieve the video.
+### 4.2 Admin Monitoring Flow
+1.  **Dashboard**: Admin logs in and views active sessions.
+2.  **Live View**: Admin clicks "Live View" for an active session.
+3.  **WebSocket Reception**: The admin frontend joins the `interview_id` room via Socket.IO.
+4.  **Rendering**: Receives `live_frame` (binary video) and `live_update` (metadata) events, updating the DOM in real-time without HTTP polling overhead.
 
-## 4. Debugging Checklist
+## 5. Existing Fixes Summary
 
-To verify the findings and systematically debug the issues, follow this checklist:
+Based on `README.md` and `implementation_guide.md`, the following major architectural upgrades have already been applied:
+1.  **Live Preview Inconsistency**: Replaced HTTP polling (`setInterval` + `fetch`) with **Socket.IO**. Video frames are now sent as binary JPEG blobs, significantly reducing latency (<150ms) and server overhead.
+2.  **Video Persistence**: Replaced ephemeral local filesystem storage with **Cloudinary**. The `/upload-full-recording` endpoint now uploads directly to Cloudinary and saves the secure URL to MongoDB.
+3.  **Performance Optimization**: Replaced `setInterval` with `requestAnimationFrame` on the frontend for frame capture, implementing a 120ms throttle (~8 FPS) to reduce candidate CPU usage.
 
-### General
+## 6. Current Issues & Root Cause Analysis
 
-- [ ] **Check Browser Console**: Look for any failed network requests (4xx or 5xx errors) or JavaScript errors in both the candidate and admin browser windows.
-- [ ] **Check Backend Logs**: Inspect the logs from your Render service for any application errors, stack traces, or failed database operations.
+Despite the recent upgrades, several architectural risks and potential root causes for errors remain:
 
-### Bug 1: Live Preview Inconsistency
+### 6.1 Architectural Drift & Dead Code
+*   **Issue**: The presence of `backend/database.py` (SQLite) alongside `backend/mongo_db.py` (MongoDB) indicates incomplete migration or dead code.
+*   **Root Cause**: Legacy code was not removed during the MongoDB migration, potentially causing confusion or conflicting state if imported accidentally.
 
-- [ ] **Verify Polling Requests**: In the admin dashboard's browser developer tools (Network tab), confirm that `fetch` requests to `/admin/interview/{link_id}` are being sent regularly.
-- [ ] **Measure Request Duration**: Check the time taken for these polling requests to complete. Long durations indicate backend or database performance issues.
-- [ ] **Inspect API Responses**: Examine the JSON response from the polling endpoint. Check if the `live_monitoring` and `last_activity_at` fields are being updated as expected.
+### 6.2 Transcription Pipeline Duplication
+*   **Issue**: `forenten/MediaRecorder.js` relies on browser-based `SpeechRecognition` for live transcripts, but also uploads audio to `/transcribe`. Furthermore, `backend/transcription.py` exists as a separate Whisper-based implementation alongside logic in `uploded.py`.
+*   **Root Cause**: Conflicting implementations of transcription. If the backend Whisper service is not running or fails, the system might fall back inconsistently. The API contract for `/transcribe` in `transcription.py` expects `candidate_name`, which may not align with the main app's expectations.
 
-### Bug 2: Video Not Saving
+### 6.3 State Management in Monolith
+*   **Issue**: `backend/uploded.py` uses an in-memory dictionary (`interviews = {}`) alongside MongoDB (`interviews_collection`).
+*   **Root Cause**: In a serverless or multi-instance deployment (like Render), in-memory state will be lost on restart or not shared across workers, leading to "Interview not found" errors.
 
-- [ ] **Confirm Frontend Upload**: In the candidate's browser, after ending the interview, check the Network tab for the `POST` request to `/upload-full-recording`. Ensure it receives a 200 OK response.
-- [ ] **Inspect Upload Payload**: Verify that the request payload contains the video file (`full_interview.webm`).
-- [ ] **Check Backend Logs for Save Operation**: Look for log messages in your Render service confirming that the file was received and "saved" to a local path.
-- [ ] **Verify MongoDB Document**: Use a MongoDB client to inspect the `interviews_collection`. Find the relevant interview document and check the value of the `recording_path` field. Confirm that it contains a file path.
-- [ ] **Attempt to Access the File (if possible)**: If you can get shell access to your Render instance immediately after an upload (before it restarts), check if the file exists at the specified `recording_path`. This will confirm the ephemeral nature of the storage.
+### 6.4 WebSocket Room Isolation
+*   **Issue**: While Socket.IO rooms are used (`interview_id`), the reliance on global state or missing error handling during reconnection could break the live feed.
+*   **Root Cause**: If a candidate briefly disconnects, the frontend might not properly re-emit the `join_interview` event, leaving the admin in a stale room.
+
+## 7. Safe Fix Strategy
+
+Before modifying any code, the following strategy must be adhered to:
+
+1.  **Do Not Revert Upgrades**: Ensure that Socket.IO and Cloudinary implementations remain intact. Do not revert to HTTP polling or local storage.
+2.  **Consolidate State**: Remove reliance on the in-memory `interviews` dictionary in `uploded.py`. All state must be read from and written to MongoDB to support stateless deployment.
+3.  **Clean Up Legacy Code**: Safely deprecate and remove `backend/database.py` (SQLite) to prevent accidental imports and clarify the architecture.
+4.  **Unify Transcription**: Standardize the transcription flow. Ensure the frontend `MediaRecorder.js` correctly interfaces with a single, robust backend endpoint, handling failures gracefully.
+5.  **Enhance Error Boundaries**: Add robust `try/except` blocks around external API calls (OpenRouter, Cloudinary, Brevo) to prevent cascading failures.
+
+## 8. Recommended Debugging Order
+
+1.  **State Persistence**: Audit `uploded.py` for any usage of the `interviews` dictionary. Replace with direct MongoDB queries using `get_interview_or_404`.
+2.  **Transcription Flow**: Trace the exact payload sent by `MediaRecorder.js` to `/transcribe` and verify which backend function handles it. Resolve any mismatches.
+3.  **WebSocket Reconnection**: Test the candidate frontend's behavior when the network drops. Ensure `socket.on("connect")` re-joins the correct room.
+4.  **Dead Code Removal**: Delete `backend/database.py` and verify the test suite (`test_uploded.py`) still passes.
+5.  **Deployment Configuration**: Verify that `render.yaml` and environment variables correctly point to MongoDB and Cloudinary, ensuring no local file paths are hardcoded for permanent storage.
