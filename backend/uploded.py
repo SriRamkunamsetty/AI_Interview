@@ -1,32 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from openai import OpenAI
-import httpx
 import os
+import sys
 import json
 import tempfile
-import sys
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel
-from analyze_answer import analyze_answer
-from coding_graph import generate_coding_task, observe_coding_intent, run_coding_round
 import shutil
 import uuid
 import random
-from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
-import cloudinary
-import cloudinary.uploader
-import socketio
-import PyPDF2
-from docx import Document
-import io
-import subprocess
-import tempfile
-import shutil as py_shutil
-from openai import OpenAI
-import requests
 import threading
 import time
 import base64
@@ -34,38 +13,90 @@ import html
 import textwrap
 import traceback
 import re
+import io
+import subprocess
+import requests
+import httpx
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 from difflib import SequenceMatcher
-from pydantic import BaseModel
-from mongo_db import (
-    admins_collection,
-    answers_collection,
-    candidates_collection,
-    close_mongo,
-    get_mongo_status,
-    init_mongo,
-    interview_sessions_collection,
-    interviews_collection,
-)
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import simpleSplit
+
+# 1. Logging Setup
+print("🚀 Starting Backend Initialization...")
+
+# 2. Environment Loading
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Environment variables loaded.")
+except Exception as e:
+    print(f"⚠️ Warning: Failed to load .env file: {e}")
+
+# 3. Critical Imports with Error Handling
+try:
+    from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.middleware.gzip import GZipMiddleware
+    from pydantic import BaseModel
+    print("✅ FastAPI components imported.")
+except ImportError as e:
+    print(f"❌ CRITICAL: FastAPI import failed: {e}")
+    sys.exit(1)
+
+try:
+    import socketio
+    import cloudinary
+    import cloudinary.uploader
+    print("✅ WebSocket and Cloudinary libraries imported.")
+except ImportError as e:
+    print(f"❌ CRITICAL: External integration libraries missing: {e}")
+    sys.exit(1)
+
+try:
+    from openai import OpenAI
+    import PyPDF2
+    from docx import Document
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import simpleSplit
+    print("✅ AI and Document processing libraries imported.")
+except ImportError as e:
+    print(f"⚠️ Warning: Some processing libraries missing: {e}")
+
+# 4. Local Module Imports
+try:
+    from analyze_answer import analyze_answer
+    from coding_graph import generate_coding_task, observe_coding_intent, run_coding_round
+    from mongo_db import (
+        admins_collection,
+        answers_collection,
+        candidates_collection,
+        close_mongo,
+        get_mongo_status,
+        init_mongo,
+        interview_sessions_collection,
+        interviews_collection,
+    )
+    print("✅ Local modules imported.")
+except ImportError as e:
+    print(f"❌ CRITICAL: Local module import failed: {e}")
+    traceback.print_exc()
+    sys.exit(1)
 
 
+# 5. System Configuration
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-load_dotenv()
-print("Starting backend...")
-print("Loading environment...")
-
-# Configuration
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Cloudinary Configuration
+# 6. Cloudinary Configuration
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
@@ -84,9 +115,6 @@ else:
     except Exception as e:
         print(f"❌ ERROR: Failed to configure Cloudinary: {e}")
 
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.gzip import GZipMiddleware
-
 
 CANONICAL_FRONTEND_URL = "https://ai-adaptive-interview-liart.vercel.app"
 FRONTEND_URL = os.getenv("FRONTEND_URL", CANONICAL_FRONTEND_URL).rstrip("/")
@@ -103,12 +131,23 @@ ALLOWED_ORIGINS = [
 if FRONTEND_URL and FRONTEND_URL not in ALLOWED_ORIGINS:
     ALLOWED_ORIGINS.append(FRONTEND_URL)
 
+# 8. App Initialization
 app = FastAPI()
-print("FastAPI app initialized")
+print("✅ FastAPI app instance created.")
 
-# Socket.IO setup
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
-socket_app = socketio.ASGIApp(sio, app)
+# 9. Socket.IO Setup
+try:
+    sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+    # Mount Socket.IO as an ASGI app
+    # IMPORTANT: We export 'app' as the combined ASGI application for Uvicorn
+    socket_app = socketio.ASGIApp(sio, app)
+    # Re-assign app to socket_app so that 'uvicorn uploded:app' picks up the combined app
+    app = socket_app
+    print("✅ Socket.IO ASGI integration completed.")
+except Exception as e:
+    print(f"❌ CRITICAL: Socket.IO initialization failed: {e}")
+    traceback.print_exc()
+    sys.exit(1)
 
 @sio.event
 async def connect(sid, environ):

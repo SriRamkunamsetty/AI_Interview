@@ -2,9 +2,9 @@ services:
   - type: web
     name: ai-adaptive-interview-api-v2
     runtime: python
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn uploded:app --host 0.0.0.0 --port $PORT
+    rootDir: .
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.uploded:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeploy: true
     envVars:
