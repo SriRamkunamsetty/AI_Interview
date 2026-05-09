@@ -75,6 +75,8 @@ yarn-error.log*
 
 # Build directory
 /dist
+frontend/dist/
+functions/lib/
 
 # Cache
 .cache/
