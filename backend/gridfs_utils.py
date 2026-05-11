@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from bson import ObjectId
 from gridfs import GridFSBucket
@@ -44,6 +44,6 @@ def build_recording_url(file_id: str) -> str:
     return f"/recordings/gridfs/{file_id}"
 
 
-def open_recording_stream(file_id: str):
+def open_recording_stream(file_id: str) -> Any:
     bucket = get_gridfs_bucket()
     return bucket.open_download_stream(ObjectId(file_id))

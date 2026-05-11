@@ -1,8 +1,8 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 import os
-import tempfile
 import sys
 import json
+import tempfile
 import shutil
 import uuid
 import random
@@ -100,6 +100,7 @@ except Exception:
     pass
 
 UPLOAD_ROOT = os.getenv("UPLOAD_ROOT", "").strip()
+# Cloud Run exposes K_SERVICE and supports writable ephemeral disk under /tmp only.
 if not UPLOAD_ROOT and os.getenv("K_SERVICE"):
     UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "ai-interview")
 if UPLOAD_ROOT:
@@ -2794,7 +2795,7 @@ def stream_gridfs_recording(file_id: str):
         grid_out = open_recording_stream(file_id)
         return StreamingResponse(
             grid_out,
-            media_type=grid_out.metadata.get("content_type") if grid_out.metadata else "video/webm"
+            media_type=(grid_out.metadata or {}).get("content_type", "video/webm")
         )
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc))
