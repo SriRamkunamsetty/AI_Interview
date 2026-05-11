@@ -2748,7 +2748,7 @@ async def upload_full_recording(
                 }
             except Exception as gridfs_error:
                 print(f"⚠️ GridFS upload failed: {gridfs_error}")
-                raise HTTPException(status_code=500, detail="Failed to upload recording")
+                raise HTTPException(status_code=500, detail="GridFS upload failed")
         else:
             print(f"Uploading recording for interview {interview_id} to Cloudinary (GRIDFS_ENABLED is false)...")
 
