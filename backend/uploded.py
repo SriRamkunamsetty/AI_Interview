@@ -1904,7 +1904,7 @@ async def upload_resume(
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
         except Exception as e:
-            print(f"DB Error: {e}") Error: {db_e}")
+            print(f"DB Error: {e}")
 
 
         return {
@@ -1950,7 +1950,8 @@ async def start_interview(
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
         except Exception as db_e:
-            print(f"⚠️ DB Save Error: {db_e}")       return {
+            print(f"⚠️ DB Save Error: {db_e}")
+        return {
             "interview_id": interview_id,
             "total_questions": len(questions),
             "first_question": questions[0]

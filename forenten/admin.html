@@ -2871,6 +2871,12 @@
         const API_BASE = window.APP_CONFIG?.API_BASE_URL || "https://ai-adaptive-interview-api.onrender.com";
         const FRONTEND_BASE = window.APP_CONFIG?.FRONTEND_BASE_URL || window.location.origin;
         const SOCKET_BASE = window.APP_CONFIG?.SOCKET_BASE_URL || API_BASE;
+        function resolveRecordingUrl(recordingPath) {
+            if (!recordingPath) return '';
+            if (/^https?:\/\//i.test(recordingPath)) return recordingPath;
+            if (recordingPath.startsWith('/')) return `${API_BASE}${recordingPath}`;
+            return `${API_BASE}/${recordingPath}`;
+        }
 
         /**
          * Convert a datetime-local input value (local ISO, no timezone) to a UTC ISO
@@ -4529,6 +4535,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                 const scoreColor = avgScore >= 60 ? 'var(--accent)' : 'var(--danger)';
                 const mins = Math.floor(totalTimeSeconds / 60);
                 const integrityReport = data.integrity_report || {};
+                const recordingUrl = resolveRecordingUrl(data.recording_url);
 
                 let riskText = integrityReport.risk_classification || 'Low';
 
@@ -4571,11 +4578,11 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                     </div>
                 `;
 
-                html += `<div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:2rem;">${data.recording_url ? `
+                html += `<div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:2rem;">${recordingUrl ? `
                         <div style="flex: 1; min-width: 300px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem;">
                             <strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;"><i class="fas fa-video"></i> Interview Recording</strong>
                             <video controls style="width: 100%; max-height: 200px; border-radius: 8px; margin-top: 0.75rem; background: #000;">
-                                <source src="${API_BASE}/${data.recording_url}" type="video/webm">
+                                <source src="${recordingUrl}" type="video/webm">
                             </video>
                         </div>
                         ` : ''}
@@ -4786,6 +4793,7 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                 const totalFace = integ.total_face_alerts || 0;
                 const totalMins = integ.total_time_minutes || 0;
                 const integrityRisk = totalTabSw > 2 || totalFace > 10 ? '<i class="fas fa-circle-exclamation" style="color:var(--danger)"></i> High Risk' : totalTabSw > 0 || totalFace > 3 ? '<i class="fas fa-triangle-exclamation" style="color:var(--warning)"></i> Moderate' : '<i class="fas fa-circle-check" style="color:var(--accent)"></i> Clean';
+                const recordingUrl = resolveRecordingUrl(data.recording_url);
 
                 // Build sections
                 let html = `
@@ -4824,15 +4832,15 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                     </div>
 
                     <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-                        ${data.recording_url ? `
+                        ${recordingUrl ? `
                         <div style="flex: 1; min-width: 300px; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem;">
                             <strong style="color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;"><i class="fas fa-video"></i> Interview Recording</strong>
                             <video controls style="width: 100%; max-height: 360px; border-radius: 8px; margin-top: 0.75rem; background: #000;">
-                                <source src="${API_BASE}/${data.recording_url}" type="video/webm">
+                                <source src="${recordingUrl}" type="video/webm">
                                 Your browser does not support the video tag.
                             </video>
                             <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
-                                <a href="${API_BASE}/${data.recording_url}" download="interview_${data.candidate_name || 'recording'}.webm"
+                                <a href="${recordingUrl}" download="interview_${data.candidate_name || 'recording'}.webm"
                                    style="padding: 0.4rem 1rem; background: var(--primary); color: #fff; border-radius: 6px; text-decoration: none; font-size: 0.85rem; font-weight: 600;">
                                     <i class="fas fa-download"></i> Download Video
                                 </a>
