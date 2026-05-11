@@ -1776,6 +1776,7 @@
     </div>
 
     <script src="config.js"></script>
+    <script type="module" src="firebase-init.js"></script>
     <script src="MediaRecorder.js"></script>
     <script>
         console.log("VideoRecorder:", typeof VideoRecorder);
@@ -2074,7 +2075,7 @@
 
         function initSocket() {
             if (!currentInterviewId) return;
-            socket = io(API_BASE_URL, {
+            socket = io(SOCKET_BASE_URL, {
                 reconnection: true,
                 reconnectionAttempts: 10,
                 reconnectionDelay: 1000
@@ -2186,6 +2187,7 @@
 
         window.API_BASE_URL = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || 'https://ai-adaptive-interview-api.onrender.com';
         const API_BASE_URL = window.API_BASE_URL; // Keep local name too for convenience
+        const SOCKET_BASE_URL = window.APP_CONFIG?.SOCKET_BASE_URL || API_BASE_URL;
 
         // ─── Mic Status Indicator ────────────────────────────────────────────────
         // States: 'waiting' | 'listening' | 'processing'

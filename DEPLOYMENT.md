@@ -65,6 +65,30 @@ Production values currently configured:
 
 If your Render or Vercel URLs change, update `forenten/config.js` and set Render `FRONTEND_URL` to the same Vercel domain.
 
+## Firebase Hosting (Alternative Frontend)
+
+Firebase Hosting is configured for the `forenten/` directory using `firebase.json` and `.firebaserc`.
+
+1. Install Firebase CLI and authenticate.
+2. Ensure the project is `ai-interview-4f3a3` and hosting site is `arahinfotech-interview`.
+3. Deploy with: `firebase deploy --only hosting:arahinfotech-interview`.
+
+If you use Firebase Hosting, set `FRONTEND_URL` (and optionally `FRONTEND_URLS`) in the backend to the Firebase domain(s).
+
+## Cloud Run Backend (Dockerfile)
+
+Cloud Run can deploy the backend using the root `Dockerfile`. The container runs `uvicorn uploded:app` on port `8080`.
+
+Recommended environment variables:
+
+- `MONGO_URI`
+- `OPENROUTER_API_KEY`
+- `FRONTEND_URL`
+- `FRONTEND_URLS` (comma-separated)
+- `UPLOAD_ROOT=/tmp/ai-interview` (optional, Cloud Run defaults to `/tmp`)
+- `GRIDFS_ENABLED=true` (optional, enables GridFS recordings)
+- `GRIDFS_BUCKET=recordings`
+
 ## MongoDB Atlas
 
 Atlas must allow Render outbound access. For a portfolio/demo deployment, you can temporarily allow `0.0.0.0/0`, but production should use the narrowest possible access control supported by your hosting plan.

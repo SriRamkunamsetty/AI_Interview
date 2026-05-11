@@ -36,7 +36,7 @@ except Exception as e:
 try:
     from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from fastapi.middleware.gzip import GZipMiddleware
     from pydantic import BaseModel
@@ -69,6 +69,12 @@ except ImportError as e:
 try:
     from analyze_answer import analyze_answer
     from coding_graph import generate_coding_task, observe_coding_intent, run_coding_round
+    from gridfs_utils import (
+        build_recording_url,
+        is_gridfs_enabled,
+        open_recording_stream,
+        store_recording,
+    )
     from mongo_db import (
         admins_collection,
         answers_collection,
@@ -93,7 +99,14 @@ try:
 except Exception:
     pass
 
-UPLOAD_FOLDER = "uploads"
+UPLOAD_ROOT = os.getenv("UPLOAD_ROOT", "").strip()
+# Cloud Run exposes K_SERVICE and supports writable ephemeral disk under /tmp only.
+if not UPLOAD_ROOT and os.getenv("K_SERVICE"):
+    UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "ai-interview")
+if UPLOAD_ROOT:
+    UPLOAD_FOLDER = os.path.join(UPLOAD_ROOT, "uploads")
+else:
+    UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # 6. Cloudinary Configuration
@@ -130,6 +143,14 @@ ALLOWED_ORIGINS = [
 ]
 if FRONTEND_URL and FRONTEND_URL not in ALLOWED_ORIGINS:
     ALLOWED_ORIGINS.append(FRONTEND_URL)
+EXTRA_FRONTEND_URLS = [
+    url.strip().rstrip("/")
+    for url in os.getenv("FRONTEND_URLS", "").split(",")
+    if url.strip()
+]
+for url in EXTRA_FRONTEND_URLS:
+    if url not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(url)
 
 # 8. App Initialization
 app = FastAPI()
@@ -137,7 +158,12 @@ print("✅ FastAPI app instance created.")
 
 # 9. Socket.IO Setup
 try:
-    sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+    socketio_cors_raw = os.getenv("SOCKETIO_CORS_ORIGINS", "*").strip()
+    if socketio_cors_raw == "*":
+        socketio_cors = "*"
+    else:
+        socketio_cors = [origin.strip() for origin in socketio_cors_raw.split(",") if origin.strip()]
+    sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins=socketio_cors)
     # Mount Socket.IO as an ASGI app
     # IMPORTANT: We export 'app' as the combined ASGI application for Uvicorn
     socket_app = socketio.ASGIApp(sio, app)
@@ -195,7 +221,7 @@ def health_check():
     }
 
 # Mount uploads folder to serve files
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
 
 
 # Configure CORS
@@ -1878,7 +1904,7 @@ async def upload_resume(
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
         except Exception as e:
-            print(f"DB Error: {e}") Error: {db_e}")
+            print(f"Failed to save generated interview profile to database: {e}")
 
 
         return {
@@ -1924,7 +1950,8 @@ async def start_interview(
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
         except Exception as db_e:
-            print(f"⚠️ DB Save Error: {db_e}")       return {
+            print(f"⚠️ DB Save Error: {db_e}")
+        return {
             "interview_id": interview_id,
             "total_questions": len(questions),
             "first_question": questions[0]
@@ -2704,8 +2731,35 @@ async def upload_full_recording(
     file: UploadFile = File(...)
 ):
     try:
+        if is_gridfs_enabled():
+            try:
+                gridfs_info = store_recording(file, interview_id)
+                recording_url = build_recording_url(gridfs_info["file_id"])
+                interviews_collection.update_one(
+                    {"id": interview_id},
+                    {"$set": {
+                        "recording_path": recording_url,
+                        "recording_url": recording_url,
+                        "recording_gridfs_id": gridfs_info["file_id"],
+                        "recording_bucket": gridfs_info["bucket"],
+                        "storage_type": "gridfs"
+                    }}
+                )
+                return {
+                    "status": "success",
+                    "file_path": recording_url,
+                    "storage_type": "gridfs",
+                    "file_id": gridfs_info["file_id"]
+                }
+            except Exception as gridfs_error:
+                print(f"⚠️ GridFS upload failed: {gridfs_error}")
+                try:
+                    file.file.seek(0)
+                except Exception as seek_error:
+                    print(f"⚠️ Failed to reset upload stream for Cloudinary fallback: {seek_error}. This may prevent fallback upload; a client re-upload may be required.")
+
         print(f"Uploading recording for interview {interview_id} to Cloudinary...")
-        
+
         # Upload to Cloudinary
         # We use resource_type="video" for webm files
         upload_result = cloudinary.uploader.upload(
@@ -2714,10 +2768,10 @@ async def upload_full_recording(
             public_id=f"interviews/{interview_id}_full",
             overwrite=True
         )
-        
+
         video_url = upload_result.get("secure_url")
         print(f"Cloudinary upload successful: {video_url}")
-        
+
         # Update database with the persistent URL
         interviews_collection.update_one(
             {"id": interview_id},
@@ -2727,12 +2781,24 @@ async def upload_full_recording(
                 "storage_type": "cloudinary"
             }}
         )
-        
-        return {"status": "success", "file_path": video_url}
+
+        return {"status": "success", "file_path": video_url, "storage_type": "cloudinary"}
     except Exception as e:
         print(f"Error uploading to Cloudinary: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/recordings/gridfs/{file_id}")
+def stream_gridfs_recording(file_id: str):
+    try:
+        grid_out = open_recording_stream(file_id)
+        return StreamingResponse(
+            grid_out,
+            media_type=(grid_out.metadata or {}).get("content_type", "video/webm")
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 from reportlab.lib.pagesizes import letter
