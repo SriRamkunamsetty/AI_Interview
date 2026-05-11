@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from bson import ObjectId
 from gridfs import GridFSBucket
+from gridfs.grid_file import GridOut
 
 from mongo_db import get_db
 
@@ -18,7 +19,7 @@ def is_gridfs_enabled() -> bool:
 def get_gridfs_bucket() -> GridFSBucket:
     db = get_db()
     if db is None:
-        raise RuntimeError("MongoDB is not available for GridFS.")
+        raise RuntimeError("MongoDB is not available for GridFS. Ensure MONGO_URI is configured and mongo_db.init_mongo() succeeds.")
     return GridFSBucket(db, bucket_name=GRIDFS_BUCKET)
 
 
@@ -44,6 +45,6 @@ def build_recording_url(file_id: str) -> str:
     return f"/recordings/gridfs/{file_id}"
 
 
-def open_recording_stream(file_id: str) -> Any:
+def open_recording_stream(file_id: str) -> GridOut:
     bucket = get_gridfs_bucket()
     return bucket.open_download_stream(ObjectId(file_id))
