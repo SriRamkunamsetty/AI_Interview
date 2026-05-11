@@ -2749,32 +2749,32 @@ async def upload_full_recording(
             except Exception as gridfs_error:
                 print(f"⚠️ GridFS upload failed: {gridfs_error}")
                 raise HTTPException(status_code=500, detail="Failed to upload recording")
+        else:
+            print(f"Uploading recording for interview {interview_id} to Cloudinary (alternative non-GridFS mode)...")
 
-        print(f"Uploading recording for interview {interview_id} to Cloudinary (alternative non-GridFS mode)...")
+            # Upload to Cloudinary
+            # We use resource_type="video" for webm files
+            upload_result = cloudinary.uploader.upload(
+                file.file,
+                resource_type="video",
+                public_id=f"interviews/{interview_id}_full",
+                overwrite=True
+            )
 
-        # Upload to Cloudinary
-        # We use resource_type="video" for webm files
-        upload_result = cloudinary.uploader.upload(
-            file.file,
-            resource_type="video",
-            public_id=f"interviews/{interview_id}_full",
-            overwrite=True
-        )
+            video_url = upload_result.get("secure_url")
+            print(f"Cloudinary upload successful: {video_url}")
 
-        video_url = upload_result.get("secure_url")
-        print(f"Cloudinary upload successful: {video_url}")
+            # Update database with the persistent URL
+            interviews_collection.update_one(
+                {"id": interview_id},
+                {"$set": {
+                    "recording_path": video_url,
+                    "recording_url": video_url,
+                    "storage_type": "cloudinary"
+                }}
+            )
 
-        # Update database with the persistent URL
-        interviews_collection.update_one(
-            {"id": interview_id},
-            {"$set": {
-                "recording_path": video_url,
-                "recording_url": video_url,
-                "storage_type": "cloudinary"
-            }}
-        )
-
-        return {"status": "success", "file_path": video_url, "storage_type": "cloudinary"}
+            return {"status": "success", "file_path": video_url, "storage_type": "cloudinary"}
     except Exception as e:
         print(f"Error uploading to Cloudinary: {e}")
         traceback.print_exc()
