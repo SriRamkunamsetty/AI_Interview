@@ -2748,10 +2748,7 @@ async def upload_full_recording(
                 }
             except Exception as gridfs_error:
                 print(f"⚠️ GridFS upload failed: {gridfs_error}")
-                try:
-                    file.file.seek(0)
-                except Exception as seek_error:
-                    print(f"⚠️ Failed to reset upload stream for Cloudinary fallback: {seek_error}. This may prevent fallback upload; a client re-upload may be required.")
+                raise HTTPException(status_code=500, detail=f"GridFS upload failed: {gridfs_error}")
 
         print(f"Uploading recording for interview {interview_id} to Cloudinary...")
 
