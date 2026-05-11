@@ -164,12 +164,7 @@ try:
     else:
         socketio_cors = [origin.strip() for origin in socketio_cors_raw.split(",") if origin.strip()]
     sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins=socketio_cors)
-    # Mount Socket.IO as an ASGI app
-    # IMPORTANT: We export 'app' as the combined ASGI application for Uvicorn
-    socket_app = socketio.ASGIApp(sio, app)
-    # Re-assign app to socket_app so that 'uvicorn uploded:app' picks up the combined app
-    app = socket_app
-    print("✅ Socket.IO ASGI integration completed.")
+    print("✅ Socket.IO server initialized.")
 except Exception as e:
     print(f"❌ CRITICAL: Socket.IO initialization failed: {e}")
     traceback.print_exc()
@@ -2753,36 +2748,33 @@ async def upload_full_recording(
                 }
             except Exception as gridfs_error:
                 print(f"⚠️ GridFS upload failed: {gridfs_error}")
-                try:
-                    file.file.seek(0)
-                except Exception as seek_error:
-                    print(f"⚠️ Failed to reset upload stream for Cloudinary fallback: {seek_error}. This may prevent fallback upload; a client re-upload may be required.")
+                raise HTTPException(status_code=500, detail="GridFS upload failed")
+        else:
+            print(f"Uploading recording for interview {interview_id} to Cloudinary (GRIDFS_ENABLED is false)...")
 
-        print(f"Uploading recording for interview {interview_id} to Cloudinary...")
+            # Upload to Cloudinary
+            # We use resource_type="video" for webm files
+            upload_result = cloudinary.uploader.upload(
+                file.file,
+                resource_type="video",
+                public_id=f"interviews/{interview_id}_full",
+                overwrite=True
+            )
 
-        # Upload to Cloudinary
-        # We use resource_type="video" for webm files
-        upload_result = cloudinary.uploader.upload(
-            file.file,
-            resource_type="video",
-            public_id=f"interviews/{interview_id}_full",
-            overwrite=True
-        )
+            video_url = upload_result.get("secure_url")
+            print(f"Cloudinary upload successful: {video_url}")
 
-        video_url = upload_result.get("secure_url")
-        print(f"Cloudinary upload successful: {video_url}")
+            # Update database with the persistent URL
+            interviews_collection.update_one(
+                {"id": interview_id},
+                {"$set": {
+                    "recording_path": video_url,
+                    "recording_url": video_url,
+                    "storage_type": "cloudinary"
+                }}
+            )
 
-        # Update database with the persistent URL
-        interviews_collection.update_one(
-            {"id": interview_id},
-            {"$set": {
-                "recording_path": video_url,
-                "recording_url": video_url,
-                "storage_type": "cloudinary"
-            }}
-        )
-
-        return {"status": "success", "file_path": video_url, "storage_type": "cloudinary"}
+            return {"status": "success", "file_path": video_url, "storage_type": "cloudinary"}
     except Exception as e:
         print(f"Error uploading to Cloudinary: {e}")
         traceback.print_exc()
@@ -4462,6 +4454,10 @@ async def complete_session(link_id: str):
     except Exception as e:
         print(f"Error completing session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Wrap FastAPI app with Socket.IO after all routes/middleware/events are registered.
+app = socketio.ASGIApp(sio, app)
+print("✅ Socket.IO ASGI integration completed.")
 
 if __name__ == "__main__":
     import uvicorn
