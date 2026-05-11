@@ -2750,7 +2750,7 @@ async def upload_full_recording(
                 print(f"⚠️ GridFS upload failed: {gridfs_error}")
                 raise HTTPException(status_code=500, detail="Failed to upload recording")
         else:
-            print(f"Uploading recording for interview {interview_id} to Cloudinary (alternative non-GridFS mode)...")
+            print(f"Uploading recording for interview {interview_id} to Cloudinary (GRIDFS_ENABLED is false)...")
 
             # Upload to Cloudinary
             # We use resource_type="video" for webm files
