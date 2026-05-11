@@ -164,12 +164,7 @@ try:
     else:
         socketio_cors = [origin.strip() for origin in socketio_cors_raw.split(",") if origin.strip()]
     sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins=socketio_cors)
-    # Mount Socket.IO as an ASGI app
-    # IMPORTANT: We export 'app' as the combined ASGI application for Uvicorn
-    socket_app = socketio.ASGIApp(sio, app)
-    # Re-assign app to socket_app so that 'uvicorn uploded:app' picks up the combined app
-    app = socket_app
-    print("✅ Socket.IO ASGI integration completed.")
+    print("✅ Socket.IO server initialized.")
 except Exception as e:
     print(f"❌ CRITICAL: Socket.IO initialization failed: {e}")
     traceback.print_exc()
@@ -4462,6 +4457,10 @@ async def complete_session(link_id: str):
     except Exception as e:
         print(f"Error completing session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Wrap FastAPI app with Socket.IO after all routes/middleware/events are registered.
+app = socketio.ASGIApp(sio, app)
+print("✅ Socket.IO ASGI integration completed.")
 
 if __name__ == "__main__":
     import uvicorn
