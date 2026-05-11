@@ -3,7 +3,6 @@ import os
 import tempfile
 import sys
 import json
-import tempfile
 import shutil
 import uuid
 import random
@@ -1904,7 +1903,7 @@ async def upload_resume(
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
         except Exception as e:
-            print(f"DB Error: {e}")
+            print(f"Failed to save generated interview profile to database: {e}")
 
 
         return {
@@ -2755,8 +2754,8 @@ async def upload_full_recording(
                 print(f"⚠️ GridFS upload failed: {gridfs_error}")
                 try:
                     file.file.seek(0)
-                except Exception:
-                    pass
+                except Exception as seek_error:
+                    print(f"⚠️ Failed to reset upload stream for Cloudinary fallback: {seek_error}")
 
         print(f"Uploading recording for interview {interview_id} to Cloudinary...")
 
