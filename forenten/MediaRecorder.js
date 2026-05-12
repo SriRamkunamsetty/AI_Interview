@@ -259,7 +259,10 @@ class VideoRecorder {
         formData.append('interview_id', interviewId);
         formData.append('question_id', questionId);
 
-        const baseUrl = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || "https://ai-adaptive-interview-api.onrender.com";
+        const baseUrl = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || "";
+        if (!baseUrl) {
+            throw new Error("API_BASE_URL is not configured.");
+        }
         const response = await fetch(`${baseUrl}/transcribe`, {
             method: 'POST',
             body: formData

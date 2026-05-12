@@ -1,132 +1,87 @@
 # AI Adaptive Interview Deployment Guide
 
-This project is deployment-ready as a stable MVP with a split deployment:
+This deployment guide is stabilized for:
 
-- Frontend: Vercel static site from `forenten/`
-- Backend: Render Python web service from `backend/`
-- Database: MongoDB Atlas
+- Frontend: Firebase Hosting (`forenten/`)
+- Backend: Google Cloud Run (root `Dockerfile`)
+- Database + media storage: MongoDB Atlas + GridFS
 - AI provider: OpenRouter
-
-Do not deploy the FastAPI backend as a Vercel serverless function. This backend performs long-running AI calls, code execution, PDF generation, file uploads, and restart-sensitive workflow restoration. Keep it on a persistent web service such as Render.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  Candidate["Candidate Browser"] --> Vercel["Vercel Static Frontend"]
-  Admin["Admin Browser"] --> Vercel
-  Vercel --> Render["Render FastAPI Backend"]
-  Render --> Mongo["MongoDB Atlas"]
-  Render --> OpenRouter["OpenRouter API"]
-  Render --> Brevo["Brevo Email API (optional)"]
-  Render --> Runner["Local Code Runners (MVP only)"]
+  Candidate["Candidate Browser"] --> Firebase["Firebase Hosting (forenten)"]
+  Admin["Admin Browser"] --> Firebase
+  Firebase --> CloudRun["Cloud Run FastAPI + Socket.IO"]
+  CloudRun --> Mongo["MongoDB Atlas / GridFS"]
+  CloudRun --> OpenRouter["OpenRouter API"]
+  CloudRun --> Brevo["Brevo Email API (optional)"]
 ```
 
-## Render Backend
+## Firebase Hosting
 
-Create a Render Web Service using the repository root and `render.yaml`, or configure manually:
+Configured by:
 
-- Root directory: `backend`
-- Runtime: Python 3
-- Build command: `pip install -r requirements.txt`
-- Start command: `uvicorn uploded:app --host 0.0.0.0 --port $PORT`
-- Health check path: `/health`
+- `firebase.json` (public = `forenten`)
+- `.firebaserc` (project/site mapping)
 
-Required Render environment variables:
+The frontend reads backend endpoints from `forenten/config.js` via:
 
-- `MONGO_URI`: MongoDB Atlas connection string.
-- `OPENROUTER_API_KEY`: OpenRouter API key.
-- `FRONTEND_URL`: Vercel production frontend URL, for example `https://ai-adaptive-interview-liart.vercel.app`.
+- `window.RUNTIME_CONFIG.API_BASE_URL` (required in production)
+- `window.RUNTIME_CONFIG.SOCKET_BASE_URL` (optional; defaults to API base)
 
-Optional Render environment variables:
+## Cloud Run Backend
 
-- `BREVO_API_KEY`: enables email delivery.
-- `BREVO_SENDER_EMAIL`: verified Brevo sender address.
-- `BREVO_SENDER_NAME`: sender display name.
+Cloud Run deploys from the repository root Dockerfile.
 
-Do not set `USE_MOCK_MONGO` in production.
+- Base image: `python:3.11-slim`
+- Installs `ffmpeg`
+- Starts: `uvicorn uploded:app --host 0.0.0.0 --port 8080`
 
-## Vercel Frontend
-
-Create a Vercel project with either of these safe options:
-
-- Root directory: repository root, using `vercel.json` with `outputDirectory: "forenten"`
-- Or root directory: `forenten`, using `forenten/vercel.json`
-- Framework preset: Other
-- Build command: empty / none
-- Output directory: `forenten` from repo root, or `.` from the `forenten` root
-
-The static frontend reads API URLs from `forenten/config.js`.
-
-Production values currently configured:
-
-- API: `https://ai-adaptive-interview-1hsw.onrender.com`
-- Frontend: `https://ai-adaptive-interview-liart.vercel.app`
-
-If your Render or Vercel URLs change, update `forenten/config.js` and set Render `FRONTEND_URL` to the same Vercel domain.
-
-## Firebase Hosting (Alternative Frontend)
-
-Firebase Hosting is configured for the `forenten/` directory using `firebase.json` and `.firebaserc`.
-
-1. Install Firebase CLI and authenticate.
-2. Ensure the project is `ai-interview-4f3a3` and hosting site is `arahinfotech-interview`.
-3. Deploy with: `firebase deploy --only hosting:arahinfotech-interview`.
-
-If you use Firebase Hosting, set `FRONTEND_URL` (and optionally `FRONTEND_URLS`) in the backend to the Firebase domain(s).
-
-## Cloud Run Backend (Dockerfile)
-
-Cloud Run can deploy the backend using the root `Dockerfile`. The container runs `uvicorn uploded:app` on port `8080`.
-
-Recommended environment variables:
+### Required Cloud Run env vars
 
 - `MONGO_URI`
 - `OPENROUTER_API_KEY`
 - `FRONTEND_URL`
-- `FRONTEND_URLS` (comma-separated)
-- `UPLOAD_ROOT=/tmp/ai-interview` (optional, Cloud Run defaults to `/tmp`)
-- `GRIDFS_ENABLED=true` (optional, enables GridFS recordings)
-- `GRIDFS_BUCKET=recordings`
+- `FRONTEND_URLS`
+- `SOCKETIO_CORS_ORIGINS`
+- `GRIDFS_ENABLED=true`
+- `GRIDFS_BUCKET` (for example `interview_recordings`)
 
-## MongoDB Atlas
+### Optional Cloud Run env vars
 
-Atlas must allow Render outbound access. For a portfolio/demo deployment, you can temporarily allow `0.0.0.0/0`, but production should use the narrowest possible access control supported by your hosting plan.
+- `UPLOAD_ROOT=/tmp/ai-interview`
+- `BREVO_API_KEY`
+- `BREVO_SENDER_EMAIL`
+- `BREVO_SENDER_NAME`
 
-Collections used by the app:
+### Deprecated / unused in active path
 
-- `admins`
-- `candidates`
-- `interviews`
-- `answers`
-- `interview_sessions`
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_ADMIN_CREDENTIALS_JSON`
+
+## Runtime Constraints (stabilized)
+
+- Recording uploads are GridFS-only (Cloudinary path disabled).
+- Coding execution is Python-only.
+- Active runtime transcription endpoint is `/transcribe` in `backend/uploded.py`.
+- `backend/transcription.py` is retained for compatibility and must not be removed blindly.
 
 ## Deployment Validation Checklist
 
-After deploying:
+After manual deploy:
 
-1. Open `https://<render-service>.onrender.com/health`.
-2. Open the Vercel admin page.
-3. Log in with the configured admin account.
-4. Create a candidate session.
-5. Open the generated candidate link.
-6. Start the interview.
-7. Submit at least one answer.
-8. Verify AI score and feedback.
-9. Start a coding round.
-10. Run Python and JavaScript submissions.
-11. Generate a PDF report.
-12. Restart the Render service and confirm the session restores from MongoDB.
-
-## Known MVP Limitations
-
-- Admin auth is demo-grade and should be replaced with JWT and password hashing before real use.
-- Coding execution runs inside the backend process environment. Use isolated sandbox workers before production.
-- Whisper is not installed by default; `/transcribe` gracefully falls back.
-- Brevo email is optional and inactive until configured.
-- AI-generated coding tests need stricter validation before high-stakes use.
-- Uploaded reports and recordings are stored on the service filesystem. Render filesystem is ephemeral, so use object storage for durable media.
-
-## Rollback
-
-Render keeps the previous successful deploy running if a new deploy fails. For manual rollback, redeploy a previous commit from the Render dashboard. For frontend rollback, use Vercel's deployment history and promote a previous deployment.
+1. Open `https://<cloud-run-service-url>/health`.
+2. Open Firebase hosted admin page.
+3. Admin login + create session.
+4. Candidate link starts interview and loads questions.
+5. Verify transcript appears in candidate view.
+6. Verify admin receives `live_update` transcript and `live_frame`.
+7. Submit at least one answer; verify AI score/feedback persistence.
+8. Start coding round; verify Python run path.
+9. Complete interview; verify `/upload-full-recording` stores in GridFS.
+10. Verify recording retrieval from `/recordings/gridfs/{file_id}`.

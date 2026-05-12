@@ -4,9 +4,9 @@
     const isLocal = hostname === "127.0.0.1" || hostname === "localhost";
 
     const DEFAULTS = {
-        API_BASE_URL: "https://ai-adaptive-interview-api.onrender.com",
         LOCAL_API_BASE_URL: "http://127.0.0.1:8000",
         FRONTEND_BASE_URL: "https://arahinfotech-interview.web.app",
+        CLOUD_RUN_API_BASE_URL: "",
         SOCKET_BASE_URL: "",
         FIREBASE_CONFIG: {
             apiKey: "AIzaSyCEar7qLFumoWTmztTnvB5YxUvswbbhtpQ",
@@ -19,14 +19,33 @@
         }
     };
 
+    const normalizeUrl = (value) => (value || "").toString().trim().replace(/\/+$/, "");
+    const firstNonEmpty = (...values) => {
+        for (const value of values) {
+            const normalized = normalizeUrl(value);
+            if (normalized) return normalized;
+        }
+        return "";
+    };
+
     const apiBase =
-        RUNTIME_CONFIG.API_BASE_URL ||
-        RUNTIME_CONFIG.apiBaseUrl ||
-        (isLocal ? DEFAULTS.LOCAL_API_BASE_URL : DEFAULTS.API_BASE_URL);
+        firstNonEmpty(
+            RUNTIME_CONFIG.API_BASE_URL,
+            RUNTIME_CONFIG.apiBaseUrl,
+            RUNTIME_CONFIG.BACKEND_URL,
+            RUNTIME_CONFIG.backendUrl,
+            RUNTIME_CONFIG.CLOUD_RUN_BACKEND_URL,
+            RUNTIME_CONFIG.cloudRunBackendUrl,
+            window.CLOUD_RUN_BACKEND_URL,
+            window.BACKEND_URL
+        ) ||
+        (isLocal ? DEFAULTS.LOCAL_API_BASE_URL : DEFAULTS.CLOUD_RUN_API_BASE_URL);
 
     const frontendBase =
-        RUNTIME_CONFIG.FRONTEND_BASE_URL ||
-        RUNTIME_CONFIG.frontendBaseUrl ||
+        firstNonEmpty(
+            RUNTIME_CONFIG.FRONTEND_BASE_URL,
+            RUNTIME_CONFIG.frontendBaseUrl
+        ) ||
         (isLocal ? `${window.location.protocol}//${window.location.host}` : DEFAULTS.FRONTEND_BASE_URL);
 
     const firebaseConfig = RUNTIME_CONFIG.FIREBASE_CONFIG || RUNTIME_CONFIG.firebaseConfig || DEFAULTS.FIREBASE_CONFIG;
@@ -34,11 +53,21 @@
     const config = {
         API_BASE_URL: apiBase,
         FRONTEND_BASE_URL: frontendBase,
-        SOCKET_BASE_URL: RUNTIME_CONFIG.SOCKET_BASE_URL || RUNTIME_CONFIG.socketBaseUrl || apiBase,
+        SOCKET_BASE_URL: firstNonEmpty(
+            RUNTIME_CONFIG.SOCKET_BASE_URL,
+            RUNTIME_CONFIG.socketBaseUrl,
+            RUNTIME_CONFIG.CLOUD_RUN_SOCKET_URL,
+            RUNTIME_CONFIG.cloudRunSocketUrl
+        ) || apiBase,
         FIREBASE_CONFIG: firebaseConfig
     };
 
+    if (!config.API_BASE_URL && !isLocal) {
+        console.error("APP_CONFIG.API_BASE_URL is missing. Set window.RUNTIME_CONFIG.API_BASE_URL (Cloud Run URL).");
+    }
+
     window.APP_CONFIG = Object.freeze(config);
     window.API_BASE_URL = config.API_BASE_URL;
+    window.SOCKET_BASE_URL = config.SOCKET_BASE_URL;
     window.FRONTEND_BASE_URL = config.FRONTEND_BASE_URL;
 })();
