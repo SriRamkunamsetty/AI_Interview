@@ -22,3 +22,9 @@ services:
         sync: false
       - key: BREVO_SENDER_NAME
         value: AI Adaptive Interview
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
