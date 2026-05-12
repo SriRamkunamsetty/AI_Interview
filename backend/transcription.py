@@ -15,7 +15,6 @@ from difflib import SequenceMatcher
 # whisper is imported lazily to avoid load-time crash when the package is absent.
 try:
     import whisper as _whisper
-    import types
     _model: object = _whisper.load_model("small")
 except Exception as _whisper_err:
     _whisper = None
