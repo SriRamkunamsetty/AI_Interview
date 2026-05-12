@@ -47,7 +47,7 @@ except ImportError as e:
 
 try:
     import socketio
-    print("✅ WebSocket libraries imported.")
+    print("✅ socketio library imported.")
 except ImportError as e:
     print(f"❌ CRITICAL: External integration libraries missing: {e}")
     sys.exit(1)
@@ -2237,7 +2237,8 @@ def start_coding_round(req: CodingRoundStartRequest):
 
     existing_round = interview.get("coding_round") or {}
     if existing_round.get("task"):
-        existing_round["language"] = "python"
+        existing_round_language = (existing_round.get("language") or "python").strip().lower()
+        existing_round["language"] = existing_round_language if existing_round_language in SUPPORTED_CODING_LANGUAGES else "python"
         return {
             "interview_id": req.interview_id,
             "coding_round": existing_round,

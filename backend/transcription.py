@@ -6,8 +6,12 @@ from difflib import SequenceMatcher
 
 # NOTE:
 # This module is intentionally kept for backward compatibility during deployment
-# stabilization. Active runtime STT is currently served by /transcribe in
-# backend/uploded.py.
+# stabilization. Active runtime STT is currently served by the main backend
+# app's /transcribe endpoint.
+# Safe removal criteria:
+# 1) no route registration/import references remain for this module
+# 2) /transcribe in the main app is validated in production
+# 3) candidate/admin transcript flows are verified end-to-end
 
 router = APIRouter()
 model = whisper.load_model("small")

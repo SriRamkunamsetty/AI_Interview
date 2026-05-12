@@ -6,7 +6,7 @@
     const DEFAULTS = {
         LOCAL_API_BASE_URL: "http://127.0.0.1:8000",
         FRONTEND_BASE_URL: "https://arahinfotech-interview.web.app",
-        CLOUD_RUN_API_BASE_URL: "",
+        PRODUCTION_API_BASE_URL: "", // Placeholder fallback; set RUNTIME_CONFIG.API_BASE_URL in production.
         SOCKET_BASE_URL: "",
         FIREBASE_CONFIG: {
             apiKey: "AIzaSyCEar7qLFumoWTmztTnvB5YxUvswbbhtpQ",
@@ -39,7 +39,7 @@
             window.CLOUD_RUN_BACKEND_URL,
             window.BACKEND_URL
         ) ||
-        (isLocal ? DEFAULTS.LOCAL_API_BASE_URL : DEFAULTS.CLOUD_RUN_API_BASE_URL);
+        (isLocal ? DEFAULTS.LOCAL_API_BASE_URL : DEFAULTS.PRODUCTION_API_BASE_URL);
 
     const frontendBase =
         firstNonEmpty(
