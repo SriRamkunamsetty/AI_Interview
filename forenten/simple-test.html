@@ -39,7 +39,9 @@
 
         try {
             console.log('Sending request to /upload-resume...');
-            const response = await fetch(`${window.API_BASE_URL || 'https://ai-adaptive-interview-api.onrender.com'}/upload-resume`, {
+            const apiBase = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || '';
+            if (!apiBase) throw new Error('API_BASE_URL is not configured.');
+            const response = await fetch(`${apiBase}/upload-resume`, {
                 method: 'POST',
                 body: formData,
                 // No Content-Type header - let the browser set it with the boundary

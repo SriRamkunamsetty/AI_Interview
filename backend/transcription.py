@@ -1,12 +1,25 @@
 from fastapi import APIRouter, UploadFile, File, Form
-import whisper, tempfile, os
+import whisper
+import tempfile
+import os
 from difflib import SequenceMatcher
+
+# NOTE:
+# This module is intentionally kept for backward compatibility during deployment
+# stabilization. Active runtime STT is currently served by the main backend
+# app's /transcribe endpoint.
+# Safe removal criteria:
+# 1) no route registration/import references remain for this module
+# 2) /transcribe in the main app is validated in production
+# 3) candidate/admin transcript flows are verified end-to-end
 
 router = APIRouter()
 model = whisper.load_model("small")
 
+
 def similarity(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
 
 def fix_name(text, name):
     words = text.split()
@@ -15,10 +28,11 @@ def fix_name(text, name):
             words[i] = name
     return " ".join(words)
 
+
 @router.post("/transcribe")
 async def transcribe_audio(
     audio: UploadFile = File(...),
-    candidate_name: str = Form(...)
+    candidate_name: str = Form(...),
 ):
     data = await audio.read()
 
@@ -32,10 +46,10 @@ async def transcribe_audio(
         task="transcribe",
         fp16=False,
         initial_prompt=(
-            f"This is a job interview. "
+            "This is a job interview. "
             f"The candidate's name is {candidate_name}. "
-            f"Proper nouns and technical terms may appear."
-        )
+            "Proper nouns and technical terms may appear."
+        ),
     )
 
     os.remove(path)

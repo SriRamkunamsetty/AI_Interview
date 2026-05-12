@@ -1583,9 +1583,6 @@
                         <label for="codingLanguageSelect">Language</label>
                         <select id="codingLanguageSelect">
                             <option value="python">Python</option>
-                            <option value="javascript">JavaScript</option>
-                            <option value="java">Java</option>
-                            <option value="c">C</option>
                         </select>
                         <button id="codingVoiceBtn" class="btn btn-primary" type="button">Start Voice Notes</button>
                         <button id="codingRunBtn" class="btn btn-primary" type="button">Run Code</button>
@@ -2185,9 +2182,12 @@
             baselineArea: null
         };
 
-        window.API_BASE_URL = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || 'https://ai-adaptive-interview-api.onrender.com';
+        window.API_BASE_URL = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || '';
         const API_BASE_URL = window.API_BASE_URL; // Keep local name too for convenience
         const SOCKET_BASE_URL = window.APP_CONFIG?.SOCKET_BASE_URL || API_BASE_URL;
+        if (!API_BASE_URL) {
+            console.error('API_BASE_URL is not configured. Set window.RUNTIME_CONFIG.API_BASE_URL to your Cloud Run backend URL.');
+        }
 
         // ─── Mic Status Indicator ────────────────────────────────────────────────
         // States: 'waiting' | 'listening' | 'processing'
@@ -3807,17 +3807,14 @@
             const functionName = (task && task.function_name) || 'solve';
             const pythonSignature = (task && task.starter_function_signature) || `def ${functionName}(value):`;
             const templates = {
-                python: `${pythonSignature}\n    pass`,
-                javascript: `function ${functionName}(value) {\n  return null;\n}`,
-                java: `import java.util.*;\n\npublic class Solution {\n    public static Object ${functionName}(Object value) {\n        return null;\n    }\n}`,
-                c: `#include <stdio.h>\n\nint ${functionName}(int value) {\n    return 0;\n}`
+                python: `${pythonSignature}\n    pass`
             };
-            return templates[language] || templates.python;
+            return templates.python;
         }
 
         function syncEditorLanguage(language) {
             if (codingEditor && window.monaco) {
-                window.monaco.editor.setModelLanguage(codingEditor.getModel(), language === 'javascript' ? 'javascript' : language);
+                window.monaco.editor.setModelLanguage(codingEditor.getModel(), 'python');
             }
         }
 
@@ -4237,7 +4234,8 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
 
         function handleCodingLanguageChange() {
             const select = document.getElementById('codingLanguageSelect');
-            const nextLanguage = select.value;
+            const nextLanguage = 'python';
+            select.value = 'python';
             const task = (codingRoundState && codingRoundState.task) || {};
             const currentLanguage = codingRoundState && codingRoundState.language ? codingRoundState.language : 'python';
             codingDraftsByLanguage[currentLanguage] = getCodingCode();

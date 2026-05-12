@@ -2868,9 +2868,12 @@
 
     <script>
         // CONFIGURATION: Dynamic backend URL resolution for local testing vs production
-        const API_BASE = window.APP_CONFIG?.API_BASE_URL || "https://ai-adaptive-interview-api.onrender.com";
+        const API_BASE = window.APP_CONFIG?.API_BASE_URL || window.API_BASE_URL || "";
         const FRONTEND_BASE = window.APP_CONFIG?.FRONTEND_BASE_URL || window.location.origin;
         const SOCKET_BASE = window.APP_CONFIG?.SOCKET_BASE_URL || API_BASE;
+        if (!API_BASE) {
+            console.error("API_BASE_URL is not configured. Set window.RUNTIME_CONFIG.API_BASE_URL to your Cloud Run backend URL.");
+        }
         function resolveRecordingUrl(recordingPath) {
             if (!recordingPath) return '';
             if (/^https?:\/\//i.test(recordingPath)) return recordingPath;

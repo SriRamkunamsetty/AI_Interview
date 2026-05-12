@@ -47,9 +47,7 @@ except ImportError as e:
 
 try:
     import socketio
-    import cloudinary
-    import cloudinary.uploader
-    print("✅ WebSocket and Cloudinary libraries imported.")
+    print("✅ socketio library imported.")
 except ImportError as e:
     print(f"❌ CRITICAL: External integration libraries missing: {e}")
     sys.exit(1)
@@ -109,24 +107,9 @@ else:
     UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 6. Cloudinary Configuration
-CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
-CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
-CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
-
-if not all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
-    print("⚠️ WARNING: Cloudinary environment variables are missing. Video uploads will fail.")
-else:
-    try:
-        cloudinary.config(
-            cloud_name=CLOUDINARY_CLOUD_NAME,
-            api_key=CLOUDINARY_API_KEY,
-            api_secret=CLOUDINARY_API_SECRET,
-            secure=True
-        )
-        print("✅ Cloudinary configured successfully.")
-    except Exception as e:
-        print(f"❌ ERROR: Failed to configure Cloudinary: {e}")
+# 6. Recording Storage Configuration
+if not is_gridfs_enabled():
+    print("⚠️ WARNING: GRIDFS_ENABLED is false. Recording upload endpoint requires GRIDFS_ENABLED=true.")
 
 
 CANONICAL_FRONTEND_URL = "https://ai-adaptive-interview-liart.vercel.app"
@@ -825,6 +808,8 @@ def run_code_against_tests(code: str, task: Dict[str, Any], language: str) -> Di
     function_name = task.get("function_name") or "solve"
     tests = _normalize_runner_tests(task, task.get("test_cases", []))
     language = (language or "python").lower()
+    if language != "python":
+        return _runner_error("Only Python coding execution is enabled in this deployment.")
 
     if not code.strip():
         return _runner_error("No code was provided.")
@@ -2213,6 +2198,19 @@ class CodingRoundStartRequest(BaseModel):
     interview_id: str
 
 
+SUPPORTED_CODING_LANGUAGES = {"python"}
+
+
+def normalize_coding_language(language: str = "python") -> str:
+    normalized = (language or "python").strip().lower()
+    if normalized not in SUPPORTED_CODING_LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail="Only Python coding execution is enabled in this deployment.",
+        )
+    return normalized
+
+
 class CodingRoundCheckpointRequest(BaseModel):
     interview_id: str
     code: str = ""
@@ -2239,6 +2237,8 @@ def start_coding_round(req: CodingRoundStartRequest):
 
     existing_round = interview.get("coding_round") or {}
     if existing_round.get("task"):
+        existing_round_language = (existing_round.get("language") or "python").strip().lower()
+        existing_round["language"] = existing_round_language if existing_round_language in SUPPORTED_CODING_LANGUAGES else "python"
         return {
             "interview_id": req.interview_id,
             "coding_round": existing_round,
@@ -2252,7 +2252,7 @@ def start_coding_round(req: CodingRoundStartRequest):
         "status": "active",
         "task": task,
         "answer_summary": build_answer_summary(answers_data),
-        "language": task.get("recommended_language", "python"),
+        "language": "python",
         "latest_code": "",
         "latest_explanation": "",
         "latest_feedback": "",
@@ -2283,6 +2283,7 @@ def _run_coding_feedback(req: CodingRoundCheckpointRequest, feedback_mode: str) 
     coding_round = interview.get("coding_round")
     if not coding_round or not coding_round.get("task"):
         raise HTTPException(status_code=400, detail="Coding round not started")
+    language = normalize_coding_language(req.language)
 
     latest_code = req.code or ""
     latest_explanation = req.explanation or ""
@@ -2305,14 +2306,14 @@ def _run_coding_feedback(req: CodingRoundCheckpointRequest, feedback_mode: str) 
         answer_summary=coding_round.get("answer_summary", ""),
         code=latest_code,
         explanation=latest_explanation,
-        language=req.language,
+        language=language,
         prior_feedback=coding_round.get("latest_feedback", ""),
         feedback_mode=feedback_mode,
     )
 
     checkpoint = {
         "at": datetime.now(timezone.utc).isoformat(),
-        "language": req.language,
+        "language": language,
         "code_length": len(latest_code),
         "explanation_length": len(latest_explanation),
         "feedback": feedback,
@@ -2321,7 +2322,7 @@ def _run_coding_feedback(req: CodingRoundCheckpointRequest, feedback_mode: str) 
 
     coding_round["latest_code"] = latest_code
     coding_round["latest_explanation"] = latest_explanation
-    coding_round["language"] = req.language
+    coding_round["language"] = language
     coding_round["latest_feedback"] = feedback
     coding_round["updated_at"] = checkpoint["at"]
     coding_round.setdefault("checkpoints", []).append(checkpoint)
@@ -2355,10 +2356,11 @@ def coding_round_run(req: CodingRoundRunRequest):
     coding_round = interview.get("coding_round")
     if not coding_round or not coding_round.get("task"):
         raise HTTPException(status_code=400, detail="Coding round not started")
-    result = run_code_against_tests(req.code or "", coding_round["task"], req.language or "python")
+    language = normalize_coding_language(req.language)
+    result = run_code_against_tests(req.code or "", coding_round["task"], language)
     coding_round["latest_code"] = req.code or ""
     coding_round["latest_explanation"] = req.explanation or coding_round.get("latest_explanation", "")
-    coding_round["language"] = req.language or "python"
+    coding_round["language"] = language
     coding_round["latest_run"] = {
         "at": datetime.now(timezone.utc).isoformat(),
         **result,
@@ -2377,12 +2379,13 @@ def coding_round_observe(req: CodingRoundObserveRequest):
     coding_round = interview.get("coding_round")
     if not coding_round or not coding_round.get("task"):
         raise HTTPException(status_code=400, detail="Coding round not started")
+    language = normalize_coding_language(req.language)
 
     observation = observe_coding_intent(
         task=coding_round["task"],
         code=req.code or "",
         explanation=req.explanation or "",
-        language=req.language or "python",
+        language=language,
     )
     coding_round["last_observation"] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -2726,57 +2729,37 @@ async def upload_full_recording(
     file: UploadFile = File(...)
 ):
     try:
-        if is_gridfs_enabled():
-            try:
-                gridfs_info = store_recording(file, interview_id)
-                recording_url = build_recording_url(gridfs_info["file_id"])
-                interviews_collection.update_one(
-                    {"id": interview_id},
-                    {"$set": {
-                        "recording_path": recording_url,
-                        "recording_url": recording_url,
-                        "recording_gridfs_id": gridfs_info["file_id"],
-                        "recording_bucket": gridfs_info["bucket"],
-                        "storage_type": "gridfs"
-                    }}
-                )
-                return {
-                    "status": "success",
-                    "file_path": recording_url,
-                    "storage_type": "gridfs",
-                    "file_id": gridfs_info["file_id"]
-                }
-            except Exception as gridfs_error:
-                print(f"⚠️ GridFS upload failed: {gridfs_error}")
-                raise HTTPException(status_code=500, detail="GridFS upload failed")
-        else:
-            print(f"Uploading recording for interview {interview_id} to Cloudinary (GRIDFS_ENABLED is false)...")
-
-            # Upload to Cloudinary
-            # We use resource_type="video" for webm files
-            upload_result = cloudinary.uploader.upload(
-                file.file,
-                resource_type="video",
-                public_id=f"interviews/{interview_id}_full",
-                overwrite=True
+        if not is_gridfs_enabled():
+            raise HTTPException(
+                status_code=503,
+                detail="Recording uploads require GRIDFS_ENABLED=true (GridFS-only mode).",
             )
-
-            video_url = upload_result.get("secure_url")
-            print(f"Cloudinary upload successful: {video_url}")
-
-            # Update database with the persistent URL
+        try:
+            gridfs_info = store_recording(file, interview_id)
+            recording_url = build_recording_url(gridfs_info["file_id"])
             interviews_collection.update_one(
                 {"id": interview_id},
                 {"$set": {
-                    "recording_path": video_url,
-                    "recording_url": video_url,
-                    "storage_type": "cloudinary"
+                    "recording_path": recording_url,
+                    "recording_url": recording_url,
+                    "recording_gridfs_id": gridfs_info["file_id"],
+                    "recording_bucket": gridfs_info["bucket"],
+                    "storage_type": "gridfs"
                 }}
             )
-
-            return {"status": "success", "file_path": video_url, "storage_type": "cloudinary"}
+            return {
+                "status": "success",
+                "file_path": recording_url,
+                "storage_type": "gridfs",
+                "file_id": gridfs_info["file_id"]
+            }
+        except Exception as gridfs_error:
+            print(f"⚠️ GridFS upload failed: {gridfs_error}")
+            raise HTTPException(status_code=500, detail="GridFS upload failed")
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error uploading to Cloudinary: {e}")
+        print(f"Error uploading recording to GridFS: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
