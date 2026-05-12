@@ -116,6 +116,11 @@ CANONICAL_FRONTEND_URL = "https://ai-adaptive-interview-liart.vercel.app"
 FRONTEND_URL = os.getenv("FRONTEND_URL", CANONICAL_FRONTEND_URL).rstrip("/")
 if "ai-adaptive-interview.vercel.app" in FRONTEND_URL and "liart" not in FRONTEND_URL:
     FRONTEND_URL = CANONICAL_FRONTEND_URL
+# Firebase Hosting URLs are always allowed regardless of env var configuration.
+FIREBASE_ORIGINS = [
+    "https://arahinfotech-interview.web.app",
+    "https://arahinfotech-interview.firebaseapp.com",
+]
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://localhost:3000",
@@ -123,7 +128,7 @@ ALLOWED_ORIGINS = [
     "https://127.0.0.1:3000",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-]
+] + FIREBASE_ORIGINS
 if FRONTEND_URL and FRONTEND_URL not in ALLOWED_ORIGINS:
     ALLOWED_ORIGINS.append(FRONTEND_URL)
 EXTRA_FRONTEND_URLS = [
@@ -206,7 +211,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"https://(.*\.vercel\.app|.*\.web\.app|.*\.firebaseapp\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -677,7 +682,7 @@ def _runner_tempdir():
             return runner_tmp_path
 
         def __exit__(self, exc_type, exc, tb):
-            py_shutil.rmtree(runner_tmp_path, ignore_errors=True)
+            shutil.rmtree(runner_tmp_path, ignore_errors=True)
             return False
 
     return RunnerTempDir()
@@ -846,7 +851,7 @@ print(json.dumps(results))
         return _collect_runner_output(result)
 
     if language == "javascript":
-        if not py_shutil.which("node"):
+        if not shutil.which("node"):
             return _runner_error("JavaScript runtime is not installed on the server.")
         if not all(_supports_simple_multilang(case.get("expected")) and all(_supports_simple_multilang(arg) for arg in case.get("input", [])) for case in tests):
             return _runner_error("This task uses inputs that are not supported for JavaScript execution in the current runner.")
@@ -897,7 +902,7 @@ console.log(JSON.stringify(results));
         return _collect_runner_output(result)
 
     if language == "java":
-        if not py_shutil.which("javac") or not py_shutil.which("java"):
+        if not shutil.which("javac") or not shutil.which("java"):
             return _runner_error("Java compiler/runtime is not installed on the server.")
         try:
             runner_cases = []
@@ -973,7 +978,7 @@ class Runner {{
         return _collect_runner_output(result)
 
     if language == "c":
-        if not py_shutil.which("gcc"):
+        if not shutil.which("gcc"):
             return _runner_error("C compiler is not installed on the server.")
         if not all(
             isinstance(case.get("expected"), (int, bool, str))
@@ -1983,7 +1988,12 @@ async def upload_answer(
             audio_path
         ], check=True)
 
-        # Whisper STT
+        # Whisper STT is not wired up on this endpoint.
+        # Use /transcribe for audio transcription and /save-answer for answer persistence.
+        raise HTTPException(
+            status_code=501,
+            detail="This endpoint is not fully implemented. Use /transcribe for audio upload and /save-answer to persist answers.",
+        )
 
 @app.get("/interview/{interview_id}/summary")
 async def get_interview_summary(interview_id: str):
@@ -4454,7 +4464,6 @@ if __name__ == "__main__":
         for port in range(start_port, start_port + max_tries):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                # Try binding to the candidate port to check availability
                 s.bind((HOST, port))
                 s.close()
                 return port
@@ -4467,13 +4476,14 @@ if __name__ == "__main__":
     if port_to_use != DEFAULT_PORT:
         print(f"Port {DEFAULT_PORT} is in use; starting server on available port {port_to_use} instead.")
 
-    # Check for SSL certificates in the forenten folder
-    cert_path = r"c:\Users\sagar\Downloads\mock-interview\forenten\cert.pem"
-    key_path = r"c:\Users\sagar\Downloads\mock-interview\forenten\key.pem"
-    
-    if os.path.exists(cert_path) and os.path.exists(key_path):
+    # SSL is terminated by Cloud Run in production; local SSL is opt-in via env vars.
+    # Set SSL_CERT_PATH and SSL_KEY_PATH for local HTTPS development.
+    cert_path = os.getenv("SSL_CERT_PATH", "")
+    key_path = os.getenv("SSL_KEY_PATH", "")
+
+    if cert_path and key_path and os.path.exists(cert_path) and os.path.exists(key_path):
         print(f"🚀 Starting HTTPS server on port {port_to_use}")
         uvicorn.run(app, host=HOST, port=port_to_use, ssl_certfile=cert_path, ssl_keyfile=key_path)
     else:
-        print(f"🚀 Starting HTTP server on port {port_to_use} (SSL certs not found)")
+        print(f"🚀 Starting HTTP server on port {port_to_use}")
         uvicorn.run(app, host=HOST, port=port_to_use)
