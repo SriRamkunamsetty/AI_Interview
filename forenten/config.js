@@ -6,7 +6,9 @@
     const DEFAULTS = {
         LOCAL_API_BASE_URL: "http://127.0.0.1:8000",
         FRONTEND_BASE_URL: "https://arahinfotech-interview.web.app",
-        PRODUCTION_API_BASE_URL: "", // Placeholder fallback; set RUNTIME_CONFIG.API_BASE_URL in production.
+        /* Set to your Cloud Run URL (e.g. "https://<svc>-<hash>-<region>.a.run.app"),
+           or inject window.RUNTIME_CONFIG = { API_BASE_URL: "https://..." } before this file. */
+        PRODUCTION_API_BASE_URL: "",
         SOCKET_BASE_URL: "",
         FIREBASE_CONFIG: {
             apiKey: "AIzaSyCEar7qLFumoWTmztTnvB5YxUvswbbhtpQ",

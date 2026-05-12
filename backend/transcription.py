@@ -1,5 +1,4 @@
 from fastapi import APIRouter, UploadFile, File, Form
-import whisper
 import tempfile
 import os
 from difflib import SequenceMatcher
@@ -13,8 +12,17 @@ from difflib import SequenceMatcher
 # 2) /transcribe in the main app is validated in production
 # 3) candidate/admin transcript flows are verified end-to-end
 
+# whisper is imported lazily to avoid load-time crash when the package is absent.
+try:
+    import whisper as _whisper
+    import types
+    _model: object = _whisper.load_model("small")
+except Exception as _whisper_err:
+    _whisper = None
+    _model = None
+    print(f"[transcription.py] whisper unavailable: {_whisper_err}")
+
 router = APIRouter()
-model = whisper.load_model("small")
 
 
 def similarity(a, b):
@@ -34,13 +42,16 @@ async def transcribe_audio(
     audio: UploadFile = File(...),
     candidate_name: str = Form(...),
 ):
+    if _model is None:
+        return {"text": "No speech detected", "transcription_available": False}
+
     data = await audio.read()
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as f:
         f.write(data)
         path = f.name
 
-    result = model.transcribe(
+    result = _model.transcribe(
         path,
         language="en",
         task="transcribe",
