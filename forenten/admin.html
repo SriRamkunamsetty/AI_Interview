@@ -2914,7 +2914,8 @@
             adminSocket = io(SOCKET_BASE, {
                 reconnection: true,
                 reconnectionAttempts: 100,
-                reconnectionDelay: 2000
+                reconnectionDelay: 2000,
+                transports: ['websocket']
             });
             adminSocket.on('connect', () => {
                 console.log('Admin connected to WebSocket');
@@ -2985,6 +2986,11 @@
                 if (_adminFrameRenderPending) {
                     console.warn('[stream] Render pending failsafe triggered (load timed out)');
                     _adminFrameRenderPending = false;
+                    frameImg.onload = null;
+                    frameImg.onerror = null;
+                    if (newUrl && newUrl.startsWith('blob:')) {
+                        try { URL.revokeObjectURL(newUrl); } catch (e) {}
+                    }
                 }
             }, 1000);
 
@@ -3144,7 +3150,10 @@
                 <div style="display:grid;grid-template-columns:minmax(300px,1.1fr) minmax(320px,0.9fr);gap:1rem;align-items:start;">
                     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
-                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-camera"></i> Candidate Camera</strong>
+                            <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;">
+                                <i class="fas fa-camera"></i> Candidate Camera
+                                <span id="streamDebug" style="font-size:0.75rem;color:var(--accent);margin-left:0.5rem;font-weight:bold;text-transform:none;"></span>
+                            </strong>
                             <span style="font-size:0.82rem;color:var(--text-muted);">${candidateMonitoring.face_status || live.face_status || 'Waiting for camera feed'}</span>
                         </div>
                         <div id="liveFrameContainer" style="position:relative; width:100%; aspect-ratio:16/10; border-radius:12px; border:1px solid var(--border); background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center;">
@@ -4615,7 +4624,31 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                 const data = await response.json();
 
                 if (data.session_status !== 'completed') {
+                    // Preserve the existing image, placeholder, and streamDebug elements to avoid breaking active WebSocket loads and event listeners
+                    const oldImg = document.getElementById('candidateLiveFrame');
+                    const oldPlaceholder = document.getElementById('candidateLiveFramePlaceholder');
+                    const oldDebugText = document.getElementById('streamDebug')?.textContent;
+
                     container.innerHTML = buildLiveMonitoringHtml(data, interviewId);
+
+                    if (oldImg) {
+                        const newContainer = document.getElementById('liveFrameContainer');
+                        if (newContainer) {
+                            const newImg = newContainer.querySelector('#candidateLiveFrame');
+                            const newPlaceholder = newContainer.querySelector('#candidateLiveFramePlaceholder');
+                            if (newImg) newImg.remove();
+                            if (newPlaceholder) newPlaceholder.remove();
+
+                            // Re-append the preserved elements
+                            newContainer.appendChild(oldImg);
+                            if (oldPlaceholder) newContainer.appendChild(oldPlaceholder);
+                        }
+                    }
+
+                    if (oldDebugText) {
+                        const newDebug = document.getElementById('streamDebug');
+                        if (newDebug) newDebug.textContent = oldDebugText;
+                    }
                     return;
                 }
 

@@ -2070,12 +2070,15 @@
         let tabViolationCount = 0;
         let socket = null;
 
+        let _lastFrameSentTime = 0;
+
         function initSocket() {
             if (!currentInterviewId) return;
             socket = io(SOCKET_BASE_URL, {
                 reconnection: true,
                 reconnectionAttempts: 100,
-                reconnectionDelay: 2000
+                reconnectionDelay: 2000,
+                transports: ['websocket']
             });
             socket.on('connect', () => {
                 console.log('Connected to WebSocket server');
@@ -2105,8 +2108,15 @@
         }
 
         function sendVideoFrame() {
-            // Back-pressure: skip if previous frame hasn't been sent yet
-            if (_framePending) return;
+            // Back-pressure: skip if previous frame hasn't been sent yet, with a 2-second timeout failsafe
+            if (_framePending) {
+                if (Date.now() - _lastFrameSentTime > 2000) {
+                    console.warn('[stream] Frame pending lock held too long. Resetting lock.');
+                    _framePending = false;
+                } else {
+                    return;
+                }
+            }
 
             const video = document.getElementById('videoPreview');
             if (!video || video.paused || video.ended || !socket || !socket.connected) return;
@@ -2123,9 +2133,10 @@
 
             streamCtx.drawImage(video, 0, 0, streamCanvas.width, streamCanvas.height);
 
-            const quality = 0.4;
+            const quality = 0.45; // 0.45–0.55 optimal range
 
             _framePending = true;
+            _lastFrameSentTime = Date.now();
             streamCanvas.toBlob((blob) => {
                 if (blob && socket && socket.connected) {
                     socket.emit('video_frame', {
@@ -2137,6 +2148,18 @@
                 _framePending = false;
             }, 'image/jpeg', quality);
         }
+
+        // Visibility lifecycle handling: reset locks and verify camera stream on tab show
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) {
+                console.log("[stream] Tab became visible. Resetting frame lock.");
+                _framePending = false;
+                const video = document.getElementById('videoPreview');
+                if (video && video.paused && interviewActive) {
+                    video.play().catch(e => console.warn("[stream] Error playing video on tab focus:", e));
+                }
+            }
+        });
 
 
         function emitCandidateUpdate(extraData = {}) {
