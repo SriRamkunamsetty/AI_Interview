@@ -5,7 +5,7 @@
 
     const DEFAULTS = {
         LOCAL_API_BASE_URL: "http://127.0.0.1:8000",
-        FRONTEND_BASE_URL: "https://arahinfotech-interview.web.app",
+        FRONTEND_BASE_URL: "https://plasma-streamer-469211-n5.web.app",
         PRODUCTION_API_BASE_URL: "https://ai-interview-backend-1076783333102.asia-south1.run.app",
         SOCKET_BASE_URL: "",
         FIREBASE_CONFIG: {

@@ -116,10 +116,11 @@ CANONICAL_FRONTEND_URL = "https://ai-adaptive-interview-liart.vercel.app"
 FRONTEND_URL = os.getenv("FRONTEND_URL", CANONICAL_FRONTEND_URL).rstrip("/")
 if "ai-adaptive-interview.vercel.app" in FRONTEND_URL and "liart" not in FRONTEND_URL:
     FRONTEND_URL = CANONICAL_FRONTEND_URL
-# Firebase Hosting URLs are always allowed regardless of env var configuration.
 FIREBASE_ORIGINS = [
     "https://arahinfotech-interview.web.app",
     "https://arahinfotech-interview.firebaseapp.com",
+    "https://plasma-streamer-469211-n5.web.app",
+    "https://plasma-streamer-469211-n5.firebaseapp.com",
 ]
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
