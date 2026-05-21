@@ -2899,11 +2899,22 @@
         let adminSocket = null;
 
         function initAdminSocket(interviewId) {
-            if (adminSocket) adminSocket.disconnect();
+            // Reset frame rendering state on new connection to prevent lockups
+            _adminFrameRenderPending = false;
+            lastFrameTimestamp = 0;
+
+            if (adminSocket) {
+                try {
+                    adminSocket.disconnect();
+                } catch (e) {
+                    console.warn('[socket] Error disconnecting stale socket:', e);
+                }
+            }
+
             adminSocket = io(SOCKET_BASE, {
                 reconnection: true,
-                reconnectionAttempts: 10,
-                reconnectionDelay: 1000
+                reconnectionAttempts: 100,
+                reconnectionDelay: 2000
             });
             adminSocket.on('connect', () => {
                 console.log('Admin connected to WebSocket');
@@ -2915,36 +2926,85 @@
             adminSocket.on('live_frame', (data) => {
                 renderLiveFrame(data);
             });
+            // Real-time push: instant answer saved notification
+            adminSocket.on('answer_saved', (data) => {
+                console.log('[socket] Answer saved:', data);
+                // Auto-refresh live results view if we're watching this interview
+                if (typeof refreshLiveResults === 'function') refreshLiveResults();
+            });
+            // Real-time push: instant session completion notification
+            adminSocket.on('session_completed', (data) => {
+                console.log('[socket] Session completed:', data);
+                // Auto-refresh session list and live results
+                if (typeof loadDashboardSessions === 'function') loadDashboardSessions();
+                if (typeof refreshLiveResults === 'function') refreshLiveResults();
+            });
         }
 
         let lastFrameTimestamp = 0;
+        let _adminFrameCount = 0;
+        let _adminFrameRenderPending = false;
         function renderLiveFrame(data) {
+            // Throttle: skip if we're still processing the previous frame
+            if (_adminFrameRenderPending) return;
+
             const frameImg = document.querySelector('#liveResultsContent img[alt="Candidate Video"]');
             if (!frameImg) return;
 
             // Basic latency tracking
             const now = Date.now();
-            const latency = now - data.timestamp;
-            
+            const latency = now - (data.timestamp || now);
+            const frameDelta = (data.timestamp || now) - lastFrameTimestamp;
+
+            // Skip frames arriving faster than 200ms to reduce render pressure
+            if (lastFrameTimestamp && frameDelta < 200) return;
+
             // Update debug metrics if they exist
             const debugEl = document.getElementById('streamDebug');
             if (debugEl) {
-                debugEl.textContent = `Latency: ${latency}ms | FPS: ${Math.round(1000 / (data.timestamp - lastFrameTimestamp))}`;
+                _adminFrameCount++;
+                debugEl.textContent = `Latency: ${latency}ms | FPS: ${frameDelta > 0 ? Math.round(1000 / frameDelta) : 0} | Frames: ${_adminFrameCount}`;
             }
-            lastFrameTimestamp = data.timestamp;
+            lastFrameTimestamp = data.timestamp || now;
 
-            // Use URL.createObjectURL for binary blobs
-            const blob = new Blob([data.frame], { type: 'image/jpeg' });
-            const url = URL.createObjectURL(blob);
-            
-            // Efficiently update image source
-            const oldUrl = frameImg.src;
-            frameImg.src = url;
-            
-            // Clean up old URL to prevent memory leaks
-            if (oldUrl.startsWith('blob:')) {
-                URL.revokeObjectURL(oldUrl);
+            // Ensure image is visible and any overlay placeholder is hidden
+            frameImg.style.display = 'block';
+            const placeholder = document.getElementById('candidateLiveFramePlaceholder');
+            if (placeholder) {
+                placeholder.style.display = 'none';
             }
+
+            // Create blob URL from binary data
+            const blob = new Blob([data.frame], { type: 'image/jpeg' });
+            const newUrl = URL.createObjectURL(blob);
+            const oldUrl = frameImg.src;
+
+            // Failsafe timeout to prevent _adminFrameRenderPending from getting stuck permanently
+            _adminFrameRenderPending = true;
+            const renderFailsafe = setTimeout(() => {
+                if (_adminFrameRenderPending) {
+                    console.warn('[stream] Render pending failsafe triggered (load timed out)');
+                    _adminFrameRenderPending = false;
+                }
+            }, 1000);
+
+            frameImg.onload = () => {
+                clearTimeout(renderFailsafe);
+                if (oldUrl && oldUrl.startsWith('blob:')) {
+                    URL.revokeObjectURL(oldUrl);
+                }
+                _adminFrameRenderPending = false;
+                frameImg.onload = null;
+            };
+            frameImg.onerror = () => {
+                clearTimeout(renderFailsafe);
+                if (oldUrl && oldUrl.startsWith('blob:')) {
+                    URL.revokeObjectURL(oldUrl);
+                }
+                _adminFrameRenderPending = false;
+                frameImg.onerror = null;
+            };
+            frameImg.src = newUrl;
         }
 
         function updateLiveUI(data) {
@@ -3007,6 +3067,37 @@
             }
         }
 
+        function cleanupLiveMonitoringSocketAndPoller() {
+            clearLiveResultsPolling();
+            if (adminSocket) {
+                console.log('[cleanup] Disconnecting admin socket and removing listeners.');
+                try {
+                    adminSocket.off();
+                    adminSocket.disconnect();
+                } catch (e) {
+                    console.warn('[cleanup] Error during socket cleanup:', e);
+                }
+                adminSocket = null;
+            }
+            _adminFrameRenderPending = false;
+            lastFrameTimestamp = 0;
+
+            const frameImg = document.querySelector('#liveResultsContent img[alt="Candidate Video"]');
+            if (frameImg) {
+                const oldUrl = frameImg.src;
+                frameImg.onload = null;
+                frameImg.onerror = null;
+                frameImg.src = '';
+                if (oldUrl && oldUrl.startsWith('blob:')) {
+                    try {
+                        URL.revokeObjectURL(oldUrl);
+                    } catch (e) {
+                        console.warn('[cleanup] Error revoking blob URL:', e);
+                    }
+                }
+            }
+        }
+
         function buildLiveMonitoringHtml(data, interviewId) {
             const live = data.live_monitoring || {};
             const progress = data.progress || {};
@@ -3056,7 +3147,12 @@
                             <strong style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;"><i class="fas fa-camera"></i> Candidate Camera</strong>
                             <span style="font-size:0.82rem;color:var(--text-muted);">${candidateMonitoring.face_status || live.face_status || 'Waiting for camera feed'}</span>
                         </div>
-                        ${frame ? `<img src="${frame}" style="width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:12px;border:1px solid var(--border);background:#000;" />` : '<div style="height:260px;border-radius:12px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text-muted);background:rgba(255,255,255,0.02);">Live frame will appear once the candidate grants camera access.</div>'}
+                        <div id="liveFrameContainer" style="position:relative; width:100%; aspect-ratio:16/10; border-radius:12px; border:1px solid var(--border); background:#000; overflow:hidden; display:flex; align-items:center; justify-content:center;">
+                            <img id="candidateLiveFrame" alt="Candidate Video" src="${frame || ''}" style="width:100%; height:100%; object-fit:cover; display: ${frame ? 'block' : 'none'}; border:none; outline:none; background:transparent;" />
+                            <div id="candidateLiveFramePlaceholder" style="position:absolute; inset:0; display: ${frame ? 'none' : 'flex'}; align-items:center; justify-content:center; color:var(--text-muted); background:rgba(255,255,255,0.02); text-align:center; padding:1rem; font-size:0.9rem;">
+                                Live frame will appear once the candidate grants camera access.
+                            </div>
+                        </div>
                         <div style="margin-top:1rem;display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">
                             <div style="padding:0.9rem;border-radius:10px;background:var(--bg-input);border:1px solid var(--border);">
                                 <div style="font-size:0.76rem;color:var(--text-muted);text-transform:uppercase;">Current Question</div>
@@ -3679,6 +3775,10 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
 
         // --- DASHBOARD LAYOUT LOGIC ---
         function switchView(viewId) {
+            if (viewId !== 'results') {
+                cleanupLiveMonitoringSocketAndPoller();
+            }
+
             document.querySelectorAll('.view-panel').forEach(p => p.classList.add('hidden'));
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
 
@@ -3788,6 +3888,9 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                 });
                 if (res.ok) {
                     showToast(`Session ${action}d successfully`, "success");
+                    if (action === 'deactivate' && linkId === currentViewId) {
+                        cleanupLiveMonitoringSocketAndPoller();
+                    }
                     loadDashboardSessions();
                 } else {
                     showToast(`Failed to ${action} session`, "error");
@@ -3805,6 +3908,9 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                 const res = await fetch(`${API_BASE}/admin/sessions/${linkId}`, { method: 'DELETE' });
                 if (res.ok) {
                     showToast("Session deleted successfully", "success");
+                    if (linkId === currentViewId) {
+                        cleanupLiveMonitoringSocketAndPoller();
+                    }
                     loadDashboardSessions();
                 } else {
                     showToast("Failed to delete session", "error");
@@ -4513,6 +4619,9 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
                     return;
                 }
 
+                // Session is completed, tear down live socket and poller
+                cleanupLiveMonitoringSocketAndPoller();
+
                 if (!data.answers || data.answers.length === 0) {
                     container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 3rem;">No answers recorded yet. The candidate has not started answering questions.</div>';
                     return;
@@ -4736,6 +4845,11 @@ Click OK to confirm this candidate mapping, or Cancel to review the form.`);
 
         // Set initial icon on load
         document.addEventListener('DOMContentLoaded', initThemeIcon);
+
+        // Cleanup resources before window/tab close
+        window.addEventListener('beforeunload', () => {
+            cleanupLiveMonitoringSocketAndPoller();
+        });
 
         // --- VIEW RESULTS MODAL ---
         let currentViewId = null;

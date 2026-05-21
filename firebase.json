@@ -1,6 +1,5 @@
 {
   "hosting": {
-    "site": "arahinfotech-interview",
     "public": "forenten",
     "ignore": [
       "firebase.json",

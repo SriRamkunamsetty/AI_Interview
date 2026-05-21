@@ -178,17 +178,14 @@ def _build_client():
     if not MONGO_URI:
         raise RuntimeError("MONGO_URI is not configured.")
 
-    _validate_mongo_configuration()
+    _log(f"Inferred Database Name: {DB_NAME}")
     return MongoClient(
         MONGO_URI,
         serverSelectionTimeoutMS=5000,
         connectTimeoutMS=5000,
         socketTimeoutMS=5000,
-        retryWrites=True,
-        tls=True,
         tlsCAFile=certifi.where(),
         directConnection=False,
-        appname="AIAdaptiveInterview",
         server_api=ServerApi("1"),
     )
 

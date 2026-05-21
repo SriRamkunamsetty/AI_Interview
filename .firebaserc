@@ -1,14 +1,5 @@
 {
   "projects": {
     "default": "ai-interview-4f3a3"
-  },
-  "targets": {
-    "ai-interview-4f3a3": {
-      "hosting": {
-        "arahinfotech-interview": [
-          "arahinfotech-interview"
-        ]
-      }
-    }
   }
 }

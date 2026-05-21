@@ -2074,8 +2074,8 @@
             if (!currentInterviewId) return;
             socket = io(SOCKET_BASE_URL, {
                 reconnection: true,
-                reconnectionAttempts: 10,
-                reconnectionDelay: 1000
+                reconnectionAttempts: 100,
+                reconnectionDelay: 2000
             });
             socket.on('connect', () => {
                 console.log('Connected to WebSocket server');
@@ -2086,38 +2086,46 @@
 
         let streamCanvas = document.createElement('canvas');
         let streamCtx = streamCanvas.getContext('2d');
-        let lastFrameTime = 0;
-        const FRAME_INTERVAL = 120; // ~8 FPS for smooth but efficient streaming
+        let _streamIntervalId = null;
+        let _framePending = false;
+        const FRAME_INTERVAL = 250; // ~4 FPS — smooth yet bandwidth-efficient
 
         function startStreaming() {
-            if (!interviewActive) return;
-            requestAnimationFrame(streamLoop);
+            if (_streamIntervalId || !interviewActive) return;
+            _framePending = false;
+            _streamIntervalId = setInterval(sendVideoFrame, FRAME_INTERVAL);
         }
 
-        function streamLoop(timestamp) {
-            if (!interviewActive) return;
-            if (timestamp - lastFrameTime > FRAME_INTERVAL) {
-                sendVideoFrame();
-                lastFrameTime = timestamp;
+        function stopStreaming() {
+            if (_streamIntervalId) {
+                clearInterval(_streamIntervalId);
+                _streamIntervalId = null;
             }
-            requestAnimationFrame(streamLoop);
+            _framePending = false;
         }
 
         function sendVideoFrame() {
-            const video = document.getElementById('candidateVideo');
+            // Back-pressure: skip if previous frame hasn't been sent yet
+            if (_framePending) return;
+
+            const video = document.getElementById('videoPreview');
             if (!video || video.paused || video.ended || !socket || !socket.connected) return;
+
+            // Ensure video metadata and dimensions are loaded to prevent DOM exceptions
+            if (video.videoWidth === 0 || video.videoHeight === 0) return;
 
             // Set canvas size to match video aspect ratio but smaller for performance
             if (streamCanvas.width !== 320) {
                 streamCanvas.width = 320;
-                streamCanvas.height = video.videoHeight / (video.videoWidth / 320);
+                const ratio = video.videoHeight / video.videoWidth;
+                streamCanvas.height = Math.round(320 * ratio);
             }
 
             streamCtx.drawImage(video, 0, 0, streamCanvas.width, streamCanvas.height);
-            
-            // Adaptive quality based on simple logic (can be expanded)
-            const quality = 0.4; 
-            
+
+            const quality = 0.4;
+
+            _framePending = true;
             streamCanvas.toBlob((blob) => {
                 if (blob && socket && socket.connected) {
                     socket.emit('video_frame', {
@@ -2126,15 +2134,17 @@
                         timestamp: Date.now()
                     });
                 }
+                _framePending = false;
             }, 'image/jpeg', quality);
         }
+
 
         function emitCandidateUpdate(extraData = {}) {
             if (!socket || !interviewActive) return;
             const updateData = {
                 interview_id: currentInterviewId,
                 timestamp: new Date().toISOString(),
-                phase: currentPhase || 'verbal',
+                phase: interviewPhase || 'verbal',
                 question_index: currentQuestionId || 0,
                 total_questions: (questions && questions.length) || 0,
                 current_transcript: document.getElementById('transcriptionBox')?.value || '',
@@ -4316,6 +4326,14 @@ Output: ${formatCodingValue(testCase.output)}${resultBlock}</pre>
             sendLiveMonitoringUpdate(true);
             stopLiveMonitoringSync();
             interviewActive = false;
+
+            // Stop video streaming and disconnect socket to prevent stale updates
+            // from overwriting the 'completed' session status
+            if (typeof stopStreaming === 'function') stopStreaming();
+            if (socket) {
+                try { socket.disconnect(); } catch (e) { console.warn('Socket disconnect:', e); }
+                socket = null;
+            }
 
             if (codingVoiceListening && codingVoiceRecognition) {
                 codingVoiceListening = false;

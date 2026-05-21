@@ -2114,6 +2114,20 @@ async def save_answer(
 
     print("✅ Answer saved to DB.")
 
+    # Push real-time notification to admin dashboard via Socket.IO
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        loop.create_task(sio.emit("answer_saved", {
+            "interview_id": interview_id,
+            "question_id": question_id,
+            "ai_score": ai_result.get("overall_score", 0),
+            "ai_feedback": ai_result.get("feedback", ""),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }, room=interview_id))
+    except Exception as push_err:
+        print(f"[answer-save] Socket.IO push failed (non-fatal): {push_err}")
+
     return {
         "status": "saved",
         "ai_score": ai_result.get("overall_score", 0),
@@ -3130,104 +3144,6 @@ def queue_or_send_interview_email(session_doc: Dict[str, Any], link_url: str) ->
         "email_send_at": (send_at.isoformat() if send_at else now.isoformat())
     }
 
-def send_interview_email(candidate_email: str, candidate_name: str, link_url: str, duration: int, job_description: str, custom_html: str = "", scheduled_start: str = "", scheduled_end: str = ""):
-    import os
-    import requests
-    from dotenv import load_dotenv
-    load_dotenv(override=True)
-    brevo_api_key = os.getenv("BREVO_API_KEY")
-    sender_name = os.getenv("BREVO_SENDER_NAME", "Arah Info Tech Pvt ltd")
-    sender_email = os.getenv("BREVO_SENDER_EMAIL", "oragantisagar041@gmail.com")
-
-    if not brevo_api_key:
-        print("⚠️ Warning: BREVO_API_KEY not found in environment")
-        return False
-    
-    print(f"DEBUG: Using Brevo API key: {brevo_api_key[:10]}...{brevo_api_key[-5:] if len(brevo_api_key) > 5 else ''}")
-    print(f"DEBUG: Sender Email: {sender_email}")
-        
-    # Prepare the job description by replacing newlines with HTML line breaks
-    formatted_jd = job_description.replace("\n", "<br/>")
-
-    url = "https://api.brevo.com/v3/smtp/email"
-    headers = {
-        "accept": "application/json",
-        "api-key": brevo_api_key,
-        "content-type": "application/json"
-    }
-
-    # Construct the base URL for the interview link
-    # On Render, FRONTEND_URL should be set to your Vercel URL
-    full_link = link_url if link_url.startswith("http") else f"{os.getenv('FRONTEND_URL', 'https://ai-adaptive-interview-liart.vercel.app')}{link_url}"
-
-    # Task 4: Build schedule info block
-    schedule_block = ""
-    if scheduled_start:
-        try:
-            from datetime import datetime as dt_parse
-            start_dt = dt_parse.fromisoformat(scheduled_start)
-            schedule_block = f'<p><b>Scheduled Time:</b> {start_dt.strftime("%d %b %Y, %I:%M %p")}'
-            if scheduled_end:
-                end_dt = dt_parse.fromisoformat(scheduled_end)
-                schedule_block += f' — {end_dt.strftime("%I:%M %p")}'
-            schedule_block += '</p>'
-            schedule_block += '<p style="color: #e74c3c;"><b>⚠️ Important:</b> This link will only be accessible during the scheduled time window. It will be sent 15 minutes before the start time.</p>'
-        except Exception:
-            pass
-
-    # Task 1: Use custom HTML if provided by admin, else use default template
-    if custom_html and custom_html.strip():
-        html_content = custom_html
-    else:
-        html_content = f"""
-    <html>
-    <body style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f8fafc;">
-        <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 12px 12px 0 0; padding: 30px; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 24px;">Interview Invitation</h1>
-        </div>
-        <div style="background: white; border-radius: 0 0 12px 12px; padding: 30px; border: 1px solid #e2e8f0; border-top: none;">
-            <p style="font-size: 16px; color: #334155;">Dear <b>{candidate_name}</b>,</p>
-            <p style="color: #475569; line-height: 1.6;">You have been invited to an AI-powered interview by <b style="color: #6366f1;">Arah Info Tech</b>.</p>
-            <div style="background: #f1f5f9; border-radius: 8px; padding: 15px; margin: 15px 0; border-left: 4px solid #6366f1;">
-                <p style="margin: 0 0 5px; font-weight: 600; color: #334155;">📋 Role Details:</p>
-                <p style="margin: 0; color: #64748b; font-size: 14px; line-height: 1.5;">{formatted_jd}</p>
-            </div>
-            <p style="color: #475569;"><b>⏱️ Duration:</b> {duration} minutes</p>
-            {schedule_block}
-            <div style="text-align: center; margin: 25px 0;">
-                <a href="{full_link}" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; display: inline-block; box-shadow: 0 4px 12px rgba(99,102,241,0.3);">
-                    🚀 Start Interview Now
-                </a>
-            </div>
-            <div style="background: #fef3c7; border-radius: 8px; padding: 12px; margin-top: 15px;">
-                <p style="margin: 0; color: #92400e; font-size: 13px;">⚠️ <b>Important:</b> This interview link will expire in exactly <b>24 hours</b>. Ensure a stable internet connection and a quiet environment.</p>
-            </div>
-            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;">
-            <p style="color: #94a3b8; font-size: 13px; margin: 0;">Best regards,<br/><b style="color: #6366f1;">Arah Info Tech Pvt Ltd</b></p>
-        </div>
-    </body>
-    </html>
-    """
-
-    payload = {
-        "sender": {
-            "name": sender_name,
-            "email": sender_email
-        },
-        "to": [{"email": candidate_email, "name": candidate_name}],
-        "subject": "Interview Invitation by Arah Info Tech",
-        "htmlContent": html_content
-    }
-
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        print(f"Email successfully sent to {candidate_email}")
-        return True
-    except Exception as e:
-        print(f"Failed to send email to {candidate_email}: {e}")
-        return False
-
 
 # ── Task 1: Email Preview Endpoint ──────────────────────────────────────────
 def send_interview_email(candidate_email: str, candidate_name: str, link_url: str, duration: int, job_description: str, custom_html: str = "", scheduled_start: str = "", scheduled_end: str = ""):
@@ -3243,6 +3159,8 @@ def send_interview_email(candidate_email: str, candidate_name: str, link_url: st
     if not brevo_api_key:
         print("Warning: BREVO_API_KEY not found in environment")
         return False
+
+    print(f"[email-send] TO={candidate_email} NAME={candidate_name} LINK={link_url[:80]}")
 
     full_link = link_url if link_url.startswith("http") else f"{os.getenv('FRONTEND_URL', 'https://ai-adaptive-interview-liart.vercel.app')}{link_url}"
 
@@ -4227,26 +4145,41 @@ async def update_live_monitoring(interview_id: str, payload: LiveMonitoringUpdat
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    current_status = session.get("status", "started")
+
+    # If session is already completed or auto-terminated, reject further live updates
+    # to prevent the 2-second interval from polluting a finished session.
+    if current_status == "completed" or session.get("auto_terminated"):
+        return {
+            "status": "success",
+            "session_completed": True,
+            "auto_terminated": bool(session.get("auto_terminated")),
+            "termination_reason": session.get("termination_reason", "")
+        }
+
     live_monitoring = payload.dict()
     live_monitoring["updated_at"] = datetime.now(timezone.utc).isoformat()
-    current_status = session.get("status", "started")
-    next_status = "completed" if current_status == "completed" else "started"
     print(
         f"[live-update] interview_id={interview_id} status={current_status} phase={live_monitoring.get('phase')} "
         f"question={live_monitoring.get('current_question_id')} transcript_words={live_monitoring.get('transcript_word_count')} "
         f"warnings={len(live_monitoring.get('warnings') or [])} frame={'yes' if live_monitoring.get('camera_frame') else 'no'}"
     )
+
+    # Atomic update: only write live_monitoring and activity timestamp.
+    # Use a conditional filter to ensure we never overwrite a 'completed' status
+    # (guards against the race where /complete-session runs between our find and update).
     interview_sessions_collection.update_one(
-        {"interview_id": interview_id},
+        {"interview_id": interview_id, "status": {"$ne": "completed"}},
         {"$set": {
             "live_monitoring": live_monitoring,
             "last_activity_at": live_monitoring["updated_at"],
-            "status": next_status
+            "status": "started"
         }}
     )
     refreshed = interview_sessions_collection.find_one({"interview_id": interview_id}) or session
     return {
         "status": "success",
+        "session_completed": refreshed.get("status") == "completed",
         "auto_terminated": bool(refreshed.get("auto_terminated")),
         "termination_reason": refreshed.get("termination_reason", "")
     }
@@ -4440,6 +4373,21 @@ async def complete_session(link_id: str):
                         total_questions=total_q
                     )
                     print(f"✅ Submission notification sent for {candidate_name}")
+
+                # Push real-time completion notification to admin dashboard
+                if interview_id:
+                    try:
+                        await sio.emit("session_completed", {
+                            "link_id": link_id,
+                            "interview_id": interview_id,
+                            "candidate_name": candidate_name,
+                            "avg_score": round(avg_score, 1),
+                            "total_questions": total_q,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }, room=interview_id)
+                    except Exception as push_err:
+                        print(f"[complete-session] Socket.IO push failed (non-fatal): {push_err}")
+
         except Exception as notify_err:
             print(f"⚠️ Submission notification error: {notify_err}")
         
